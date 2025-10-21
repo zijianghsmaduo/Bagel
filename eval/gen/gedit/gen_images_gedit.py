@@ -26,6 +26,9 @@ from data.transforms import ImageTransform
 from modeling.bagel.qwen2_navit import NaiveCache
 from modeling.autoencoder import load_ae
 
+from accelerate import infer_auto_device_map, load_checkpoint_and_dispatch, init_empty_weights
+
+
 
 def move_generation_input_to_device(generation_input, device):
     # Utility to move all tensors in generation_input to device
@@ -79,19 +82,54 @@ def setup_models(model_path, device=0):
     )
 
     # Create fusion model
-    language_model = Qwen2ForCausalLM(llm_config)
-    vit_model      = SiglipVisionModel(vit_config)
-    model          = Bagel(language_model, vit_model, config)
-    model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config)
+    with init_empty_weights():
+      language_model = Qwen2ForCausalLM(llm_config)
+      vit_model      = SiglipVisionModel(vit_config)
+      model          = Bagel(language_model, vit_model, config)
+      model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config)
 
     
     # Tokenizer Preparing
     tokenizer = Qwen2Tokenizer.from_pretrained(model_path)
     tokenizer, new_token_ids, _ = add_special_tokens(tokenizer)
 
-    ema_state_dict_path = os.path.join(model_path, f"ema.safetensors") # may beed to change
-    ema_state_dict = load_file(ema_state_dict_path, device="cpu")
-    msg = model.load_state_dict(ema_state_dict, strict=False)
+    max_mem_per_gpu = "80GiB"  # Modify it according to your GPU setting. On an A100, 80 GiB is sufficient to load on a single GPU.
+
+    device_map = infer_auto_device_map(
+        model,
+        max_memory={i: max_mem_per_gpu for i in range(torch.cuda.device_count())},
+        no_split_module_classes=["Bagel", "Qwen2MoTDecoderLayer"],
+    )
+    print(device_map)
+
+    same_device_modules = [
+        'language_model.model.embed_tokens',
+        'time_embedder',
+        'latent_pos_embed',
+        'vae2llm',
+        'llm2vae',
+        'connector',
+        'vit_pos_embed'
+    ]
+
+    first_device = device_map.get(same_device_modules[0], device)
+    for k in same_device_modules:
+        if k in device_map:
+            device_map[k] = first_device
+
+    model = load_checkpoint_and_dispatch(
+        model,
+        checkpoint=os.path.join(model_path, "ema.safetensors"),
+        device_map=device_map,
+        offload_buffers=True,
+        dtype=torch.bfloat16,
+        force_hooks=True,
+        offload_folder="/tmp/offload"
+    )
+
+    # ema_state_dict_path = os.path.join(model_path, f"ema.safetensors") # may beed to change
+    # ema_state_dict = load_file(ema_state_dict_path, device="cpu")
+    # msg = model.load_state_dict(ema_state_dict, strict=False)
 
 
     # Set up transforms
@@ -387,7 +425,8 @@ def set_seeds(seed):
 def process_dataset(
     model, vae_model, tokenizer, new_token_ids, vae_transform, vit_transform,
     output_dir, cfg_text_scale=4.0, cfg_img_scale=1.5, 
-    cfg_type="serial_text_img", num_samples=None, shard_id=0, total_shards=1, use_think=False, device='cuda'
+    cfg_type="serial_text_img", num_samples=None, shard_id=0, total_shards=1, use_think=False, device='cuda',
+    eval_num=1,
 ):
     """
     Process images from the dataset using the editing model.
@@ -399,6 +438,8 @@ def process_dataset(
     idx_list = idx_list[shard_id::total_shards]
     
     for data_idx in tqdm(idx_list):
+        if data_idx >= eval_num:
+            break
         data = dataset[data_idx]
         
         task_type = data['task_type']
@@ -471,6 +512,7 @@ def main():
                         help="Total number of shards")
     parser.add_argument("--use_think", action='store_true', 
                         help="Whether enable thinking")
+    parser.add_argument("--eval_num", type=int, default=1, help="Number of images to be evaluated")
     
     args = parser.parse_args()
     
@@ -491,6 +533,7 @@ def main():
         total_shards=args.total_shards,
         use_think=args.use_think,
         device=args.device,
+        eval_num=args.eval_num,
     )
 
 

@@ -316,6 +316,7 @@ class Bagel(PreTrainedModel):
             _curr += 1
 
             image_tensor = transforms(image)
+            print("image_tensor.size:", image_tensor.shape)
             vit_position_ids = self.get_flattened_position_ids(
                 image_tensor.size(1), image_tensor.size(2), 
                 self.vit_patch_size, 

@@ -247,6 +247,7 @@ class InterleaveInferencer:
 
                 elif isinstance(input_term, Image.Image):
                     input_term = self.vae_transform.resize_transform(pil_img2rgb(input_term))
+                    print("input_term.size:", input_term.size)
                     gen_context = self.update_context_image(input_term, gen_context, vae=not understanding_output)
 
                     image_shapes = input_term.size[::-1]
@@ -262,6 +263,8 @@ class InterleaveInferencer:
             else:
                 if think:
                     gen_text = self.gen_text(gen_context, do_sample=do_sample, temperature=text_temperature, max_length=max_think_token_n)
+                    # ?? 为什么不在 gen_text 执行之后直接返回新的 context = { kvcache, RoPE, kv_lens } 或者在 gen_text 里直接更新 gen_context
+                    # ?? 而是生成完 text 之后再 update_context_text
                     gen_context = self.update_context_text(gen_text, gen_context)
                     output_list.append(gen_text)
 

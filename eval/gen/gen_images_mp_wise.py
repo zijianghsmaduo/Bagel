@@ -8,6 +8,7 @@ from safetensors.torch import load_file
 
 import torch
 import torch.distributed as dist
+from accelerate import infer_auto_device_map, load_checkpoint_and_dispatch, init_empty_weights
 from data.data_utils import add_special_tokens
 from modeling.bagel import (
     BagelConfig, Bagel, Qwen2Config, Qwen2ForCausalLM, SiglipVisionConfig, SiglipVisionModel
@@ -273,24 +274,63 @@ if __name__ == "__main__":
         latent_patch_size=2,
         max_latent_size=args.max_latent_size,
     )
-    language_model = Qwen2ForCausalLM(llm_config)
-    vit_model = SiglipVisionModel(vit_config)
-    model = Bagel(language_model, vit_model, config)
-    model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config)
+    
+    with init_empty_weights():
+      language_model = Qwen2ForCausalLM(llm_config)
+      vit_model = SiglipVisionModel(vit_config)
+      model = Bagel(language_model, vit_model, config)
+      model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config)
 
     tokenizer = Qwen2Tokenizer.from_pretrained(args.model_path)
     tokenizer, new_token_ids, _ = add_special_tokens(tokenizer)
 
-    model_state_dict_path = os.path.join(args.model_path, "ema.safetensors")
-    model_state_dict = load_file(model_state_dict_path, device="cpu")
-    msg = model.load_state_dict(model_state_dict, strict=False)
-    if rank == 0:
-        print(msg)
+    max_mem_per_gpu = "80GiB"  # Modify it according to your GPU setting. On an A100, 80 GiB is sufficient to load on a single GPU.
 
-    del model_state_dict
+    device_map = infer_auto_device_map(
+        model,
+        max_memory={i: max_mem_per_gpu for i in range(torch.cuda.device_count())},
+        no_split_module_classes=["Bagel", "Qwen2MoTDecoderLayer"],
+    )
+    print(torch.cuda.device_count())
+    print(device_map)
+
+    same_device_modules = [
+        'language_model.model.embed_tokens',
+        'time_embedder',
+        'latent_pos_embed',
+        'vae2llm',
+        'llm2vae',
+        'connector',
+        'vit_pos_embed'
+    ]
+
+    first_device = device_map.get(same_device_modules[0], device)
+    print("first_device", first_device)
+    for k in same_device_modules:
+        if k in device_map:
+            device_map[k] = first_device
+
+    model = load_checkpoint_and_dispatch(
+        model,
+        checkpoint=os.path.join(args.model_path, "ema.safetensors"),
+        device_map=device_map,
+        offload_buffers=True,
+        dtype=torch.bfloat16,
+        force_hooks=True,
+        offload_folder="/tmp/offload"
+    )
+
+    # model_state_dict_path = os.path.join(args.model_path, "ema.safetensors")
+    # model_state_dict = load_file(model_state_dict_path, device="cpu")
+    # msg = model.load_state_dict(model_state_dict, strict=False)
+    # if rank == 0:
+    #     print(msg)
+
+    # del model_state_dict
     model = model.to(device).eval()
     vae_model = vae_model.to(device).eval()
     gen_model = model
+    print('Model loaded on', device)
 
     cfg_scale = args.cfg_scale
     cfg_interval = [0.4, 1.0]

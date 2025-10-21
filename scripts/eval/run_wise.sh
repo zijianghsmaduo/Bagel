@@ -5,8 +5,14 @@ set -x
 
 export OPENAI_API_KEY=$openai_api_key
 
-GPUS=8
+GPUS=2
 
+export PYTHONPATH=.
+# export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7
+export CUDA_VISIBLE_DEVICES=4,5
+
+model_path="./models/BAGEL-7B-MoT"
+output_path="./outputs/wise_results"
 
 # generate images
 torchrun \
@@ -17,28 +23,28 @@ torchrun \
     --master_port=12345 \
     ./eval/gen/gen_images_mp_wise.py \
     --output_dir $output_path/images \
-    --metadata-file ./eval/gen/wise/final_data.json \
-    --resolution 1024 \
-    --max-latent_size 64 \
+    --metadata_file ./eval/gen/wise/final_data.json \
+    --resolution 512 \
+    --max_latent_size 64 \
     --model-path $model_path \
     --think
 
 
 # calculate score
-python3 eval/gen/wise/gpt_eval_mp.py \
-        --json_path eval/gen/wise/data/cultural_common_sense.json \
-        --image_dir $output_path/images \
-        --output_dir $output_path
+# python3 eval/gen/wise/gpt_eval_mp.py \
+#         --json_path eval/gen/wise/data/cultural_common_sense.json \
+#         --image_dir $output_path/images \
+#         --output_dir $output_path
 
-python3 eval/gen/wise/gpt_eval_mp.py \
-        --json_path eval/gen/wise/data/spatio-temporal_reasoning.json \
-        --image_dir $output_path/images \
-        --output_dir $output_path
+# python3 eval/gen/wise/gpt_eval_mp.py \
+#         --json_path eval/gen/wise/data/spatio-temporal_reasoning.json \
+#         --image_dir $output_path/images \
+#         --output_dir $output_path
 
-python3 eval/gen/wise/gpt_eval_mp.py \
-        --json_path eval/gen/wise/data/natural_science.json \
-        --image_dir $output_path/images \
-        --output_dir $output_path
+# python3 eval/gen/wise/gpt_eval_mp.py \
+#         --json_path eval/gen/wise/data/natural_science.json \
+#         --image_dir $output_path/images \
+#         --output_dir $output_path
 
-python3 eval/gen/wise/cal_score.py \
-        --output_dir $output_path
+# python3 eval/gen/wise/cal_score.py \
+#         --output_dir $output_path

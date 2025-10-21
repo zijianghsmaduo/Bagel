@@ -3,8 +3,13 @@
 
 set -x
 
-GPUS=8
+GPUS=1
 
+export PYTHONPATH=.
+export CUDA_VISIBLE_DEVICES=7
+
+model_path="./models/BAGEL-7B-MoT"
+output_path="./outputs/geneval_results"
 
 # generate images
 torchrun \
@@ -37,5 +42,5 @@ torchrun \
     --model-path ./eval/gen/geneval/model
 
 
-# summarize score
+# # summarize score
 python ./eval/gen/geneval/evaluation/summary_scores.py $output_path/results.jsonl
