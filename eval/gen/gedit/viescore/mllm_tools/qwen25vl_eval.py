@@ -43,11 +43,11 @@ class Qwen25VL():
     def __init__(self) -> None:     
         attn_implementation = "flash_attention_2" if is_flash_attn_2_available() else None
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            "/mnt/jfs-test/pretrained_models/Qwen2.5-VL-72B-Instruct-AWQ", 
+            "/share/liujun/xinhaolee/workspace/mllms/Bagel/models/Qwen2.5-VL-72B-Instruct-AWQ", 
             torch_dtype=torch.float16, 
             device_map="auto"
         ).eval()
-        self.processor = AutoProcessor.from_pretrained("/mnt/jfs-test/pretrained_models/Qwen2.5-VL-72B-Instruct-AWQ")
+        self.processor = AutoProcessor.from_pretrained("/share/liujun/xinhaolee/workspace/mllms/Bagel/models/Qwen2.5-VL-72B-Instruct-AWQ")
 
         print(f"Using {attn_implementation} for attention implementation")
 

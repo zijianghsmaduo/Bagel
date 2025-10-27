@@ -279,6 +279,7 @@ class Bagel(PreTrainedModel):
         extra_inputs = {}
         if self.use_moe:
             extra_inputs = {"mode": "und"}
+        extra_inputs.update(timestep=-3)
 
         output = self.language_model.forward_inference(
             packed_query_sequence=packed_text_embedding,
@@ -316,7 +317,7 @@ class Bagel(PreTrainedModel):
             _curr += 1
 
             image_tensor = transforms(image)
-            print("image_tensor.size:", image_tensor.shape)
+            print("ViT input image size:", image_tensor.shape)
             vit_position_ids = self.get_flattened_position_ids(
                 image_tensor.size(1), image_tensor.size(2), 
                 self.vit_patch_size, 
@@ -398,6 +399,7 @@ class Bagel(PreTrainedModel):
         extra_inputs = {}
         if self.use_moe:
             extra_inputs = {"mode": "und"}
+        extra_inputs.update(timestep=-2)
 
         output = self.language_model.forward_inference(
             packed_query_sequence=packed_sequence,
@@ -531,7 +533,8 @@ class Bagel(PreTrainedModel):
             extra_inputs = {
                 "mode": "gen",
                 "packed_vae_token_indexes": packed_vae_token_indexes,
-                "packed_text_indexes": packed_text_indexes
+                "packed_text_indexes": packed_text_indexes,
+                "timestep": -1,
             }
 
         output = self.language_model.forward_inference(
@@ -742,6 +745,8 @@ class Bagel(PreTrainedModel):
                 model_pred_text_current=model_pred_text_current,
                 model_pred_img_cache_dic=model_pred_img_cache_dic,
                 model_pred_img_current=model_pred_img_current,
+                #
+                t=i,
             )
 
             x_t = x_t - v_t.to(x_t.device) * dts[i] # velocity pointing from data to noise
@@ -793,6 +798,8 @@ class Bagel(PreTrainedModel):
         model_pred_text_current: Optional[int] = None,
         model_pred_img_cache_dic: Optional[Dict[str, Any]] = None,
         model_pred_img_current: Optional[int] = None,
+        #
+        t: Optional[int] = None,
     ):
         packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)
         packed_sequence = packed_text_embedding.new_zeros((sum(packed_seqlens), self.hidden_size))
@@ -811,7 +818,8 @@ class Bagel(PreTrainedModel):
             extra_inputs = {
                 "mode": "gen",
                 "packed_vae_token_indexes": packed_vae_token_indexes,
-                "packed_text_indexes": packed_text_indexes
+                "packed_text_indexes": packed_text_indexes,
+                "timestep": t,
             }
         
         if self.language_model.model.enable_taylorseer:
@@ -833,6 +841,7 @@ class Bagel(PreTrainedModel):
         v_t = self.llm2vae(output.packed_query_sequence)
         v_t = v_t[packed_vae_token_indexes]
 
+        extra_inputs.update(timestep=None)
         if cfg_text_scale > 1.0:
             if self.language_model.model.enable_taylorseer:
                 self.language_model.model.cache_dic = model_pred_text_cache_dic
@@ -961,6 +970,7 @@ class Bagel(PreTrainedModel):
             extra_inputs = {}
             if self.use_moe:
                 extra_inputs = {"mode": "und"}
+            extra_inputs.update(timestep=step)
 
             output = self.language_model.forward_inference(
                 packed_query_sequence=packed_text_embedding,

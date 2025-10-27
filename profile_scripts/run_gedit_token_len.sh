@@ -31,7 +31,7 @@ OUTPUT_DIR="./outputs/gedit_results"
 # OUTPUT_DIR="./outputs/gedit_results_thinking"
 GEN_DIR="$OUTPUT_DIR/gen_image"
 LOG_DIR="$OUTPUT_DIR/logs"
-# EVAL_BACKBONE="qwen25vl"
+EVAL_BACKBONE="qwen25vl"
 
 AZURE_ENDPOINT="https://azure_endpoint_url_you_use"  # set up the azure openai endpoint url
 AZURE_OPENAI_KEY=""  # set up the azure openai key
@@ -59,18 +59,3 @@ done
 
 wait
 echo "Image Generation Done"
-
-
-# # ---------------------
-# #    GPT Evaluation
-# # ---------------------
-cd eval/gen/gedit
-python test_gedit_score.py --save_path "$OUTPUT_DIR" --azure_endpoint "$AZURE_ENDPOINT" --gpt_keys "$AZURE_OPENAI_KEY"  --max_workers "$N_GPT_PARALLEL" --backbone "$EVAL_BACKBONE"
-echo "Evaluation Done"
-
-
-# # --------------------
-# #    Print Results
-# # --------------------
-python calculate_statistics.py --save_path "$OUTPUT_DIR"  --language en
-

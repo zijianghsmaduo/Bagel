@@ -12,3 +12,8 @@ outputs
 *.pth
 logs/
 env.sh
+mmdetection/
+weight*/*
+attn*/*
+models/*
+data/bagel_example

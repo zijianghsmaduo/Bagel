@@ -238,18 +238,20 @@ class InterleaveInferencer:
                     system_prompt = GEN_THINK_SYSTEM_PROMPT
                 gen_context = self.update_context_text(system_prompt, gen_context)
                 cfg_img_context = self.update_context_text(system_prompt, cfg_img_context)
+                print(f"After adding system prompt, kv_lens: {gen_context['kv_lens']}")
 
             for input_term in input_lists:
                 if isinstance(input_term, str):
                     cfg_text_context = deepcopy(gen_context)
                     gen_context = self.update_context_text(input_term, gen_context)
+                    print(f"After adding input text, kv_lens: {gen_context['kv_lens']}")
                     cfg_img_context = self.update_context_text(input_term, cfg_img_context)
 
                 elif isinstance(input_term, Image.Image):
                     input_term = self.vae_transform.resize_transform(pil_img2rgb(input_term))
-                    print("input_term.size:", input_term.size)
+                    print("VAE input image size:", input_term.size)
                     gen_context = self.update_context_image(input_term, gen_context, vae=not understanding_output)
-
+                    print(f"After adding input image, kv_lens: {gen_context['kv_lens']}")
                     image_shapes = input_term.size[::-1]
                     cfg_text_context = deepcopy(gen_context)
 
@@ -266,6 +268,7 @@ class InterleaveInferencer:
                     # ?? 为什么不在 gen_text 执行之后直接返回新的 context = { kvcache, RoPE, kv_lens } 或者在 gen_text 里直接更新 gen_context
                     # ?? 而是生成完 text 之后再 update_context_text
                     gen_context = self.update_context_text(gen_text, gen_context)
+                    print(f"After adding generated text, kv_lens: {gen_context['kv_lens']}")
                     output_list.append(gen_text)
 
                 img = self.gen_image(
