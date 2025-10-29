@@ -20,7 +20,7 @@ vae_vit_end = 3241
 is_save = False
 is_truncate = False
 save_dir = "attn_probs_qkv_dump_new"
-sparsity = np.zeros(28, dtype=np.float32)
+sparsity = np.zeros((49, 28), dtype=np.float32)
 
 def set_save(flag: bool):
 	global is_save
@@ -121,11 +121,11 @@ def naive_varlen_attention(
 					attn_probs_vae_vit = attn_probs[:, :, vae_vit_start:vae_vit_end]
 					if mode == "gen" and timestep is not None and timestep >= 0:
 						to_zero = torch.abs(attn_probs_vae_vit) < min_threshold
-						sparsity[layer_idx] = torch.mean(to_zero.float()).item()
+						sparsity[timestep][layer_idx] = torch.mean(to_zero.float()).item()
 						attn_probs[:, :, vae_vit_start:vae_vit_end] = attn_probs_vae_vit.masked_fill(to_zero, 0.0)
 
 
-				should_save = layer_idx is not None and timestep is not None and is_save and mode == "gen"
+				should_save = layer_idx is not None and timestep is not None and is_save
 				if should_save:
 						os.makedirs(save_dir, exist_ok=True)
 				if should_save:

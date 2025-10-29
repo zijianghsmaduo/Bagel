@@ -18,13 +18,18 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 export PYTHONPATH=.
-export CUDA_VISIBLE_DEVICES=4
+export CUDA_VISIBLE_DEVICES=5
 
 is_save=--is_save
 # is_truncate=--is_truncate
-save_dir="attn_probs_qkv_dump_tmp"
+save_dir="attn_probs_qkv_dump_woman"
 threshold=4e-5
 
-CUDA_VISIBLE_DEVICES=4 python3 ./profile/test_inference.py $is_save $is_truncate --save_dir $save_dir --threshold $threshold
+CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python3 ./profile/test_inference.py $is_save $is_truncate --save_dir $save_dir --threshold $threshold
+
+echo "is_save: $is_save" >> $save_dir/arg_log.txt
+echo "is_truncate: $is_truncate" >> $save_dir/arg_log.txt
+echo "save_dir: $save_dir" >> $save_dir/arg_log.txt
+echo "threshold: $threshold" >> $save_dir/arg_log.txt
 
 wait
