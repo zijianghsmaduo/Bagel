@@ -17,10 +17,11 @@ DEBUG = False
 min_threshold: float = 3e-6
 vae_vit_start = 48
 vae_vit_end = 3241
+self_start = 3491
 is_save = False
 is_truncate = False
 save_dir = "attn_probs_qkv_dump_new"
-sparsity = np.zeros((49, 28), dtype=np.float32)
+sparsity = np.zeros((2, 49, 28), dtype=np.float32)
 
 def set_save(flag: bool):
 	global is_save
@@ -61,6 +62,8 @@ def store_attn_scores(attn_probs, mode: str, timestep: Optional[int], layer_idx:
 				torch.save([entry_to_save], save_path)
 		else:
 				torch.save([entry_to_save], save_path)
+
+
 def naive_varlen_attention(
 		packed_query_states,   # (total_q, n_heads, head_dim)
 		merged_key_states,     # (total_k, n_kv_heads, head_dim)
@@ -119,10 +122,122 @@ def naive_varlen_attention(
 
 				if is_truncate:
 					attn_probs_vae_vit = attn_probs[:, :, vae_vit_start:vae_vit_end]
+					attn_probs_self = attn_probs[:, :, self_start:]
 					if mode == "gen" and timestep is not None and timestep >= 0:
 						to_zero = torch.abs(attn_probs_vae_vit) < min_threshold
-						sparsity[timestep][layer_idx] = torch.mean(to_zero.float()).item()
+						sparsity[0][timestep][layer_idx] = torch.mean(to_zero.float()).item()
 						attn_probs[:, :, vae_vit_start:vae_vit_end] = attn_probs_vae_vit.masked_fill(to_zero, 0.0)
+
+						to_zero_self = torch.abs(attn_probs_self) < min_threshold
+						sparsity[1][timestep][layer_idx] = torch.mean(to_zero_self.float()).item()
+						attn_probs[:, :, self_start:] = attn_probs_self.masked_fill(to_zero_self, 0.0)
+
+
+				should_save = layer_idx is not None and timestep is not None and is_save
+				if should_save:
+						os.makedirs(save_dir, exist_ok=True)
+				if should_save:
+						filename = f"{mode}_qkv_attn_probs_layer_{layer_idx}_ts_{timestep}_batch_{b}.pt"
+						save_path = os.path.join(save_dir, filename)
+						
+						# 2. 将元数据和数据打包成一个字典
+						entry_to_save = {
+								"q": q_bmm.cpu(),
+								"k": k_bmm.cpu(),
+								"v": v_bmm.cpu(),
+								"attn_probs": attn_probs.cpu(),
+								# "data": attn_probs.cpu()
+						}
+
+						# 3. 加载、追加并保存
+						if not os.path.exists(save_path):
+								# try:
+								#     existing_data = torch.load(save_path)
+								#     if isinstance(existing_data, list):
+								#         existing_data.append(entry_to_save)
+								#         torch.save(existing_data, save_path)
+								#     else: # 兼容旧格式
+								#         torch.save([existing_data, entry_to_save], save_path)
+								# except Exception as e:
+								#     print(f"Could not append to {save_path}: {e}. Overwriting.")
+								#     torch.save([entry_to_save], save_path)
+						# else:
+								torch.save([entry_to_save], save_path)
+				
+				context_bmm = torch.bmm(attn_probs, v_bmm) # (n_heads, Lq, d)
+				context = context_bmm.transpose(0, 1) # (Lq, n_heads, d)
+
+				outputs.append(context)
+
+		return torch.cat(outputs, dim=0) # (total_q, n_heads, d)
+
+def naive_verlen_sparse_attention(
+		packed_query_states,   # (total_q, n_heads, head_dim)
+		merged_key_states,     # (total_k, n_kv_heads, head_dim)
+		merged_value_states,   # (total_k, n_kv_heads, head_dim)
+		cu_seqlens_q,          # (B+1,)
+		cu_seqlens_k,          # (B+1,)
+		causal: bool,
+		mode: str = "und",
+		timestep: Optional[int] = None,
+		layer_idx: Optional[int] = None,
+):
+		outputs = []
+		B = cu_seqlens_q.numel() - 1
+		D = packed_query_states.shape[-1]
+		# scale = packed_query_states.size(-1) ** -0.5
+
+		num_q_heads = packed_query_states.size(1)
+		num_kv_heads = merged_key_states.size(1)
+		if num_q_heads != num_kv_heads:
+				if num_q_heads % num_kv_heads != 0:
+						raise ValueError(
+								f"Grouped-query attention mismatch: {num_q_heads=} is not a multiple of {num_kv_heads=}."
+						)
+				group_size = num_q_heads // num_kv_heads
+				merged_key_states = merged_key_states.repeat_interleave(group_size, dim=1)
+				merged_value_states = merged_value_states.repeat_interleave(group_size, dim=1)
+
+
+		for b in range(B):
+				q_start, q_end = cu_seqlens_q[b].item(), cu_seqlens_q[b + 1].item()
+				k_start, k_end = cu_seqlens_k[b].item(), cu_seqlens_k[b + 1].item()
+
+				q = packed_query_states[q_start:q_end]          # (Lq, n_heads, d)
+				k = merged_key_states[k_start:k_end]            # (Lk, n_kv_heads, d)
+				v = merged_value_states[k_start:k_end]          # (Lk, n_kv_heads, d)
+
+				q_bmm = q.transpose(0, 1)  # (n_heads, Lq, d)
+				k_bmm = k.transpose(0, 1)  # (n_heads, Lk, d)
+				v_bmm = v.transpose(0, 1)  # (n_heads, Lk, d)
+
+				# attn_scores = torch.bmm(q_bmm, k_bmm.transpose(1, 2)) * scale # (n_heads, Lq, Lk)
+				attn_scores = torch.bmm(q_bmm, k_bmm.transpose(1, 2) / math.sqrt(D)) # (n_heads, Lq, Lk)
+
+				if causal:
+						Lq, Lk = attn_scores.size(1), attn_scores.size(2)
+						if Lq > 1:
+								q_indices = torch.arange(Lq, device=attn_scores.device).unsqueeze(1)
+								k_indices = torch.arange(Lk, device=attn_scores.device).unsqueeze(0)
+								
+								causal_mask_shift = Lk - Lq
+								mask = k_indices > (q_indices + causal_mask_shift)
+								
+								attn_scores.masked_fill_(mask, float("-inf"))
+
+				attn_probs = torch.softmax(attn_scores, dim=-1) # (n_heads, Lq, Lk)
+
+				if is_truncate:
+					attn_probs_vae_vit = attn_probs[:, :, vae_vit_start:vae_vit_end]
+					attn_probs_self = attn_probs[:, :, self_start:]
+					if mode == "gen" and timestep is not None and timestep >= 0:
+						to_zero = torch.abs(attn_probs_vae_vit) < min_threshold
+						sparsity[0][timestep][layer_idx] = torch.mean(to_zero.float()).item()
+						attn_probs[:, :, vae_vit_start:vae_vit_end] = attn_probs_vae_vit.masked_fill(to_zero, 0.0)
+
+						to_zero_self = torch.abs(attn_probs_self) < min_threshold
+						sparsity[1][timestep][layer_idx] = torch.mean(to_zero_self.float()).item()
+						attn_probs[:, :, self_start:] = attn_probs_self.masked_fill(to_zero_self, 0.0)
 
 
 				should_save = layer_idx is not None and timestep is not None and is_save

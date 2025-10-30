@@ -401,16 +401,15 @@ def gen_vae_vit_attn_map(load_dir = "attn_probs_qkv_dump", is_truncate = False, 
       plt.close(fig)
       print(f"Saved figure to {os.path.join(figure_path, figure_name)}")
 
-def gen_global_attn_map(load_dir = "attn_probs_qkv_dump", timestep = 20, is_truncate = False, min_threshold = 4e-5, heads_to_plot = None, layer_idxes = None, name=""):
+def gen_global_attn_map(load_dir = "attn_probs_qkv_dump", timestep = 20, 
+                        is_truncate = False, min_threshold = 4e-5, heads_to_plot = None, 
+                        layer_idxes = None, name="", with_box=True):
   if heads_to_plot is None:
     heads_to_plot = list(range(-1, 28))
 
   fn = extract_global
   if layer_idxes is None:
     layer_idxes = range(0, 28)
-  # layer_idxes = [0, 5, 10, 15, 20, 25, 27]
-  # layer_idxes = 
-  # timestep = 20
   elem = 'attn_probs'
   
   # --- 提前创建好 norm 对象和 cmap ---
@@ -463,8 +462,11 @@ def gen_global_attn_map(load_dir = "attn_probs_qkv_dump", timestep = 20, is_trun
   with open(os.path.join(figure_path, f"global_attn_map{name}_log.txt"), 'w') as f:
     f.write(write_log)
 
-  box_coords = (0, boundary_indices["self"][1]-boundary_indices["self"][0], boundary_indices["input_prompt"][0], boundary_indices["gen_text"][1])
-  box_style={'edgecolor':'blue','linewidth':2,'linestyle':'--'}
+  box_coords = None
+  box_style = None
+  if with_box:
+    box_coords = (0, boundary_indices["self"][1]-boundary_indices["self"][0], boundary_indices["input_prompt"][0], boundary_indices["gen_text"][1])
+    box_style={'edgecolor':'blue','linewidth':2,'linestyle':'--'}
 
   for layer_idx in layer_idxes:
       tmp_file = f"./{load_dir}/gen_qkv_attn_probs_layer_{layer_idx}_ts_{timestep}_batch_0.pt"
@@ -686,7 +688,7 @@ if __name__ == "__main__":
   # gen_vae_vit_attn_map(load_dir = "attn_probs_qkv_dump_new", is_truncate = True, min_threshold = 4e-5, heads_to_plot=None, name="new_")
   # gen_vae_vit_attn_map(load_dir = "attn_probs_qkv_dump", is_truncate = True, min_threshold = 4e-5, heads_to_plot=None)
   # und_vae_vit_attn_map(load_dir = "attn_probs_qkv_dump_octupusy_thredshold", heads_to_plot=None)
-  gen_global_attn_map(load_dir = "attn_probs_qkv_dump_octupusy_thredshold", is_truncate = False, min_threshold = 4e-5, heads_to_plot=None, name='_octupusy_thredshold_with_frame')
+  # gen_global_attn_map(load_dir = "attn_probs_qkv_dump_octupusy_thredshold", is_truncate = False, min_threshold = 4e-5, heads_to_plot=None, name='_octupusy_thredshold_with_frame')
   # kvcache_global_value_map(load_dir="attn_probs_qkv_dump_octupusy_thredshold", elem='k', name='octupusy_', heads_to_plot=None)
   parser = argparse.ArgumentParser(description="Generate Attention Map Visualizations")
   parser.add_argument('--mode', type=str, choices=['gen_vae_vit', 'gen_global', 'und_vae_vit', 'kvcache_global_value'], required=False, default='gen_global',

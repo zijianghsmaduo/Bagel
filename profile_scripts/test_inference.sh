@@ -20,8 +20,8 @@ trap cleanup SIGINT SIGTERM
 export PYTHONPATH=.
 export CUDA_VISIBLE_DEVICES=5
 
-is_save=--is_save
-# is_truncate=--is_truncate
+# is_save=--is_save
+is_truncate=--is_truncate
 save_dir="attn_probs_qkv_dump_woman"
 threshold=4e-5
 
