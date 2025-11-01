@@ -12,7 +12,7 @@
 
 from dataclasses import dataclass
 from functools import partial
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, cast
 
 import torch
 from torch import nn
@@ -37,9 +37,13 @@ from modeling.cache_utils.taylorseer import (
 )
 
 from modeling.basic.attention import ( 
-	naive_varlen_attention, comp_mse, flash_attn_varlen_attention, 
-	scaled_dot_attn_varlen_attention, store_attn_scores, ref_varlen_attention
+	# naive_varlen_attention, comp_mse, flash_attn_varlen_attention, 
+	# scaled_dot_attn_varlen_attention, store_attn_scores, ref_varlen_attention,
+	# naive_verlen_sparse_attention,
+	TrickAttention
 )
+
+from modeling.basic import KVCacheStructure, OctopusKVCache, WomanKVCache
 
 torch._dynamo.config.cache_size_limit = 512
 torch._dynamo.config.accumulated_cache_size_limit = 4096
@@ -383,7 +387,7 @@ class PackedAttention(Qwen2Attention):
 
 
 class PackedAttentionMoT(Qwen2Attention):
-		def __init__(self, config, layer_idx: Optional[int] = None):
+		def __init__(self, config, layer_idx: Optional[int] = None, trick_attn: Optional[TrickAttention] = None):
 				super().__init__(config, layer_idx)
 				if self.config.qk_norm:
 						self.q_norm = Qwen2RMSNorm(self.head_dim, eps=config.rms_norm_eps)
@@ -400,6 +404,8 @@ class PackedAttentionMoT(Qwen2Attention):
 				self.k_proj_moe_gen = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
 				self.v_proj_moe_gen = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
 				self.o_proj_moe_gen = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
+				
+				self.trick_attn = trick_attn
 
 		def forward(self, *args, **kwargs):
 				if self.training:
@@ -583,16 +589,39 @@ class PackedAttentionMoT(Qwen2Attention):
 				cu_seqlens_q = torch.nn.functional.pad(torch.cumsum(query_lens, dim=0), (1, 0))
 				cu_seqlens_k = torch.nn.functional.pad(torch.cumsum(key_values_lens, dim=0), (1, 0))
 
-				# packed_attn_output = flash_attn_varlen_func(
-				#     q=packed_query_states,
-				#     k=merged_key_states,
-				#     v=merged_value_states,
-				#     cu_seqlens_q=cu_seqlens_q.to(torch.int32),
-				#     cu_seqlens_k=cu_seqlens_k.to(torch.int32),
-				#     max_seqlen_q=max(query_lens).item(),
-				#     max_seqlen_k=max(key_values_lens).item(),
-				#     causal=is_causal,
-				# )
+				kv_cache = KVCacheStructure()
+				packed_attn_output = torch.zeros_like(packed_query_states, dtype=packed_query_states.dtype, device=packed_query_states.device)
+				if self.trick_attn is None:
+					packed_attn_output = flash_attn_varlen_func(
+							q=packed_query_states,
+							k=merged_key_states,
+							v=merged_value_states,
+							cu_seqlens_q=cu_seqlens_q.to(torch.int32),
+							cu_seqlens_k=cu_seqlens_k.to(torch.int32),
+							max_seqlen_q=max(query_lens).item(),
+							max_seqlen_k=max(key_values_lens).item(),
+							causal=is_causal,
+					)
+				else:
+					# print("here using trick attention")
+					kv_cache_dict = OctopusKVCache
+					# kv_cache_dict = WomanKVCache
+					kv_cache.read_from_dict(kv_cache_dict)
+
+					packed_attn_output = self.trick_attn.forward(
+						packed_query_states=packed_query_states,
+						merged_key_states=merged_key_states,
+						merged_value_states=merged_value_states,
+						cu_seqlens_q=cu_seqlens_q.to(torch.int32),
+						cu_seqlens_k=cu_seqlens_k.to(torch.int32),
+						# max_seqlen_q=max(query_lens).item(),
+						# max_seqlen_k=max(key_values_lens).item(),
+						causal=is_causal,
+						mode=mode,
+						timestep=timestep,
+						layer_idx=layer_idx,
+						kv_cache=kv_cache,
+					)
 
 				# packed_attn_output_ref = flash_attn_varlen_func(
 				# 		q=packed_query_states,
@@ -605,22 +634,7 @@ class PackedAttentionMoT(Qwen2Attention):
 				# 		causal=is_causal,
 				# )
 
-				packed_attn_output = naive_varlen_attention(
-						packed_query_states=packed_query_states,
-						merged_key_states=merged_key_states,
-						merged_value_states=merged_value_states,
-						cu_seqlens_q=cu_seqlens_q.to(torch.int32),
-						cu_seqlens_k=cu_seqlens_k.to(torch.int32),
-						# max_seqlen_q=max(query_lens).item(),
-						# max_seqlen_k=max(key_values_lens).item(),
-						causal=is_causal,
-						mode=mode,
-						timestep=timestep,
-						layer_idx=layer_idx,
-				)
-				# comp_mse(packed_attn_output_ref, packed_attn_output, mode, layer_idx, timestep)
-
-				# packed_attn_output = flash_attn_varlen_attention(
+				# packed_attn_output = naive_varlen_attention(
 				# 		packed_query_states=packed_query_states,
 				# 		merged_key_states=merged_key_states,
 				# 		merged_value_states=merged_value_states,
@@ -634,19 +648,21 @@ class PackedAttentionMoT(Qwen2Attention):
 				# 		layer_idx=layer_idx,
 				# )
 
-				# packed_attn_output = ref_varlen_attention(
-				# 		packed_query_states=packed_query_states,
-				# 		merged_key_states=merged_key_states,
-				# 		merged_value_states=merged_value_states,
-				# 		cu_seqlens_q=cu_seqlens_q.to(torch.int32),
-				# 		cu_seqlens_k=cu_seqlens_k.to(torch.int32),
-				# 		max_seqlen_q=max(query_lens).item(),
-				# 		max_seqlen_k=max(key_values_lens).item(),
-				# 		causal=is_causal,
-				# 		mode=mode,
-				# 		timestep=timestep,
-				# 		layer_idx=layer_idx,
+				# packed_attn_output = naive_verlen_sparse_attention(
+				# 	packed_query_states=packed_query_states,
+				# 	merged_key_states=merged_key_states,
+				# 	merged_value_states=merged_value_states,
+				# 	cu_seqlens_q=cu_seqlens_q.to(torch.int32),
+				# 	cu_seqlens_k=cu_seqlens_k.to(torch.int32),
+				# 	# max_seqlen_q=max(query_lens).item(),
+				# 	# max_seqlen_k=max(key_values_lens).item(),
+				# 	causal=is_causal,
+				# 	mode=mode,
+				# 	timestep=timestep,
+				# 	layer_idx=layer_idx,
+				# 	kv_cache=kv_cache,
 				# )
+				# comp_mse(packed_attn_output_ref, packed_attn_output, mode, layer_idx, timestep)
 
 				packed_attn_output = packed_attn_output.reshape(-1, self.hidden_size)
 				if mode == 'und':
@@ -751,13 +767,14 @@ class Qwen2MoTDecoderLayer(nn.Module):
 				self, 
 				config, 
 				layer_idx: Optional[int] = None, 
+				trick_attn: Optional[TrickAttention] = None,
 				attn_module: Optional[Qwen2Attention] = PackedAttentionMoT,
 		):
 				super().__init__()
 				self.hidden_size = config.hidden_size
 				self.freeze_und = config.freeze_und
 
-				self.self_attn = attn_module(config, layer_idx)
+				self.self_attn = attn_module(config, layer_idx, trick_attn=trick_attn)
 
 				self.mlp = Qwen2MLP(config)
 				self.mlp_moe_gen = Qwen2MLP(config)
@@ -1009,7 +1026,7 @@ Decoder_layer_dict = {
 
 
 class Qwen2Model(Qwen2PreTrainedModel):
-		def __init__(self, config):
+		def __init__(self, config, trick_attn: Optional[TrickAttention] = None):
 				super().__init__(config)
 				self.padding_idx = config.pad_token_id
 				self.vocab_size = config.vocab_size
@@ -1018,7 +1035,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
 				self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
 				layer_module = Decoder_layer_dict[config.layer_module]
 				self.layers = nn.ModuleList(
-						[layer_module(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+						[layer_module(config, layer_idx, trick_attn=trick_attn) for layer_idx in range(config.num_hidden_layers)]
 				)
 
 				self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -1169,9 +1186,9 @@ class Qwen2Model(Qwen2PreTrainedModel):
 class Qwen2ForCausalLM(Qwen2PreTrainedModel):
 		_tied_weights_keys = ["lm_head.weight"]
 
-		def __init__(self, config):
+		def __init__(self, config, trick_attn: Optional[TrickAttention] = None):
 				super().__init__(config)
-				self.model = Qwen2Model(config)
+				self.model = Qwen2Model(config, trick_attn=trick_attn)
 				self.vocab_size = config.vocab_size
 				self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 

@@ -261,7 +261,7 @@ if __name__ == "__main__":
 	counter = start_round
 	for threshold in np.arange(min_threshold_range[0], min_threshold_range[1], step):
 		print(f"Setting min_threshold to: {threshold}")
-		save_dir = f"outputs/search/edit_{counter}_threshold_{threshold:.2e}"
+		save_dir = f"outputs/search_before_truncate/edit_{counter}_threshold_{threshold:.2e}"
 		os.makedirs(save_dir, exist_ok=True)
 		set_new_threshold(threshold)
 		set_seed(seed)
@@ -269,7 +269,7 @@ if __name__ == "__main__":
 		sparsity = get_sparsity()
 		output_txt_file = f"{save_dir}/sparsity_output.txt"
 		with open(output_txt_file, "w") as f:
-			f.write(f"Sparsity at threshold {threshold:.2e}: {sparsity.mean().item():.6f}\n")
+			f.write(f"Sparsity at threshold {threshold:.2e}: {sparsity[0].mean().item():.6f}\n")
 		counter += 1
 
 

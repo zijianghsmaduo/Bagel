@@ -16,18 +16,21 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 MODE="gen_global"
-TIME_STEPS=10
-TIME_STEPS_S=40
-TIME_STEPS_E=49
+# MODE="gen_global_special_tokens"
+# TIME_STEPS=10
+TIME_STEPS_S=0
+TIME_STEPS_E=0
 TOTAL_LAYERS=28
 LAYER_SLICES=4
 LAYER_BIAS=$((TOTAL_LAYERS / LAYER_SLICES))
 # LOAD_DIR="attn_probs_qkv_dump_octupusy_thredshold"
-LOAD_DIR="attn_probs_qkv_dump"
-# LOAD_DIR="attn_probs_qkv_dump_woman"
-# NAME="_octupusy_thredshold_with_frame"
-NAME="_octupusy_with_frame"
-MIN_THRESHOLD=4e-10
+# LOAD_DIR="attn_probs_qkv_dump"
+LOAD_DIR="attn_probs_qkv_dump_woman"
+# LOAD_DIR="attn_probs_mask_sparse_dump_octupusy_64_02"
+NAME="_octupusy_mask_sparse_64_02"
+# NAME="_octupusy_with_frame"
+MIN_THRESHOLD=4e-5
+HEAD_TO_PLOT='[-1, 0, 1, 2, 3, 4, 5, 6, 7]'
 
 set -x
 export PYTHONPATH=.
@@ -40,7 +43,7 @@ for timestep in $(seq $TIME_STEPS_S $TIME_STEPS_E); do
 
 		echo "Starting attention map generation for timestep $timestep, layer slice $layer_slice (layers $start_layer to $((start_layer + bias - 1)))"
 		python3 ./profile/attention_map.py --timestep $timestep --min_threshold $MIN_THRESHOLD --layer_base $start_layer --layer_bias $bias \
-		--load_dir $LOAD_DIR --mode $MODE --name $NAME &
+		--load_dir $LOAD_DIR --mode $MODE --name $NAME --heads "$HEAD_TO_PLOT" &
 	done
 done
 

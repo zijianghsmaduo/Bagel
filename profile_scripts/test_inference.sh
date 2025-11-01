@@ -21,9 +21,10 @@ export PYTHONPATH=.
 export CUDA_VISIBLE_DEVICES=5
 
 # is_save=--is_save
-is_truncate=--is_truncate
-save_dir="attn_probs_qkv_dump_woman"
-threshold=4e-5
+# is_truncate=--is_truncate
+save_dir="attn_probs_mask_sparse_dump_octupusy_1_02"
+threshold=4e-4
+# threshold=1
 
 CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python3 ./profile/test_inference.py $is_save $is_truncate --save_dir $save_dir --threshold $threshold
 

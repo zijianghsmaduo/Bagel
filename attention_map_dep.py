@@ -205,6 +205,14 @@ def extract_global(attn_map, head=-1):
   attn_map = attn_map[rows_to_keep, :][:, cols_to_keep]
   return attn_map
 
+def extract_global_special_tokens(attn_map, head=-1):
+  assert head < attn_map.shape[0], f"Head index {head} out of range for attention map with {attn_map.shape[0]} heads."
+  if head < 0:
+    attn_map = attn_map.mean(dim=0)
+  else:
+    attn_map = attn_map[head]
+    
+  return attn_map
 def extract_self(attn_map):
   attn_map = attn_map.mean(dim=0)
   
@@ -689,8 +697,8 @@ if __name__ == "__main__":
   gen_global_attn_map(load_dir = "attn_probs_qkv_dump_octupusy_thredshold", is_truncate = False, min_threshold = 4e-5, heads_to_plot=None, name='_octupusy_thredshold_with_frame')
   # kvcache_global_value_map(load_dir="attn_probs_qkv_dump_octupusy_thredshold", elem='k', name='octupusy_', heads_to_plot=None)
   parser = argparse.ArgumentParser(description="Generate Attention Map Visualizations")
-  parser.add_argument('--mode', type=str, choices=['gen_vae_vit', 'gen_global', 'und_vae_vit', 'kvcache_global_value'], required=False, default='gen_global',
-                      help="Mode of operation: 'gen_vae_vit', 'gen_global', 'und_vae_vit', 'kvcache_global_value'")
+  parser.add_argument('--mode', type=str, choices=['gen_vae_vit', 'gen_global', 'und_vae_vit', 'kvcache_global_value', 'gen_global_special_tokens'], required=False, default='gen_global',
+                      help="Mode of operation: 'gen_vae_vit', 'gen_global', 'und_vae_vit', 'kvcache_global_value', 'gen_global_special_tokens'")
   parser.add_argument('--load_dir', type=str, default='attn_probs_qkv_dump',
                       help="Directory to load attention probabilities from")
   parser.add_argument('--is_truncate', action='store_true',
@@ -718,3 +726,8 @@ if __name__ == "__main__":
       und_vae_vit_attn_map(load_dir=args.load_dir, name=args.name)
   elif args.mode == 'kvcache_global_value':
       kvcache_global_value_map(load_dir=args.load_dir, elem='k', name=args.name)
+  elif args.mode == 'gen_global_special_tokens':
+      layer_idxes = list(range(args.layer_base, args.layer_base + args.layer_bias))
+      gen_global_attn_map(load_dir=args.load_dir, timestep=args.timestep,
+                          is_truncate=args.is_truncate, min_threshold=args.min_threshold,
+                          layer_idxes=layer_idxes, name=args.name)

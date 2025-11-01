@@ -36,98 +36,10 @@ import random
 import numpy as np
 
 from modeling.basic.attention import (
-	set_new_threshold, get_sparsity, set_dump_dir, set_save, set_truncate
+	# set_new_threshold, get_sparsity, set_dump_dir, set_save, set_truncate,
+	TrickAttention
 )
 import argparse
-
-model_path = "./models/BAGEL-7B-MoT"  # Download from https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT
-
-# LLM config preparing
-llm_config = Qwen2Config.from_json_file(os.path.join(model_path, "llm_config.json"))
-llm_config.qk_norm = True
-llm_config.tie_word_embeddings = False
-llm_config.layer_module = "Qwen2MoTDecoderLayer"
-
-# ViT config preparing
-vit_config = SiglipVisionConfig.from_json_file(os.path.join(model_path, "vit_config.json"))
-vit_config.rope = False
-vit_config.num_hidden_layers = vit_config.num_hidden_layers - 1
-
-# VAE loading
-vae_model, vae_config = load_ae(local_path=os.path.join(model_path, "ae.safetensors"))
-
-# Bagel config preparing
-config = BagelConfig(
-		visual_gen=True,
-		visual_und=True,
-		llm_config=llm_config, 
-		vit_config=vit_config,
-		vae_config=vae_config,
-		vit_max_num_patch_per_side=70,
-		connector_act='gelu_pytorch_tanh',
-		latent_patch_size=2,
-		max_latent_size=64,
-)
-
-with init_empty_weights():
-		language_model = Qwen2ForCausalLM(llm_config)
-		vit_model      = SiglipVisionModel(vit_config)
-		model          = Bagel(language_model, vit_model, config)
-		model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config, meta=True)
-
-# Tokenizer Preparing
-tokenizer = Qwen2Tokenizer.from_pretrained(model_path)
-tokenizer, new_token_ids, _ = add_special_tokens(tokenizer)
-
-# Image Transform Preparing
-vae_transform = ImageTransform(1024, 512, 16)
-vit_transform = ImageTransform(980, 224, 14)
-# vae_transform = data.transforms.ImageTransform(1024, 512, 16)
-# vit_transform = data.transforms.ImageTransform(980, 224, 14)
-# vit_transform = ImageTransform(1024, 224, 14)
-
-max_mem_per_gpu = "80GiB"  # Modify it according to your GPU setting. On an A100, 80 GiB is sufficient to load on a single GPU.
-
-device_map = infer_auto_device_map(
-		model,
-		max_memory={i: max_mem_per_gpu for i in range(torch.cuda.device_count())},
-		no_split_module_classes=["Bagel", "Qwen2MoTDecoderLayer"],
-)
-print(device_map)
-
-same_device_modules = [
-		'language_model.model.embed_tokens',
-		'time_embedder',
-		'latent_pos_embed',
-		'vae2llm',
-		'llm2vae',
-		'connector',
-		'vit_pos_embed'
-]
-
-if torch.cuda.device_count() == 1:
-		first_device = device_map.get(same_device_modules[0], "cuda:0")
-		for k in same_device_modules:
-				if k in device_map:
-						device_map[k] = first_device
-				else:
-						device_map[k] = "cuda:0"
-else:
-		first_device = device_map.get(same_device_modules[0])
-		for k in same_device_modules:
-				if k in device_map:
-						device_map[k] = first_device
-
-# Thanks @onion-liu: https://github.com/ByteDance-Seed/Bagel/pull/8
-model = load_checkpoint_and_dispatch(
-		model,
-		checkpoint=os.path.join(model_path, "ema.safetensors"),
-		device_map=device_map,
-		offload_buffers=True,
-		dtype=torch.bfloat16,
-		force_hooks=True,
-		offload_folder="/tmp/offload"
-)
 
 def set_seed(seed):
 		random.seed(seed)
@@ -139,114 +51,6 @@ def set_seed(seed):
 		torch.backends.cudnn.deterministic = True
 		torch.backends.cudnn.benchmark = False
 
-model = model.eval()
-print('Model loaded')
-
-seed = 500
-set_seed(seed)
-
-inferencer = InterleaveInferencer(
-		model=model, 
-		vae_model=vae_model, 
-		tokenizer=tokenizer, 
-		vae_transform=vae_transform, 
-		vit_transform=vit_transform, 
-		new_token_ids=new_token_ids
-)
-
-def gen_inference(prompt, enable_taylorseer = False):
-	inference_hyper=dict(
-		cfg_text_scale=4.0,
-		cfg_img_scale=1.0,
-		cfg_interval=[0.4, 1.0],
-		timestep_shift=3.0,
-		num_timesteps=50,
-		cfg_renorm_min=0.0,
-		cfg_renorm_type="global",
-		enable_taylorseer=enable_taylorseer,
-	)
-	print(prompt)
-	print('-' * 10)
-	output_dict = inferencer(text=prompt, **inference_hyper)
-
-	save_path = "outputs/gen_inference_output.jpg"
-	output_dict['image'].save(save_path)
-	print(f"Image saved to {save_path}")
-
-def gen_inference_with_thinking(prompt, enable_taylorseer = False):
-	inference_hyper=dict(
-		max_think_token_n=1000,
-		do_sample=False,
-		# text_temperature=0.3,
-		cfg_text_scale=4.0,
-		cfg_img_scale=1.0,
-		cfg_interval=[0.4, 1.0],
-		timestep_shift=3.0,
-		num_timesteps=50,
-		cfg_renorm_min=0.0,
-		cfg_renorm_type="global",
-		enable_taylorseer=enable_taylorseer,
-	)
-	print(prompt)
-	print('-' * 10)
-	output_dict = inferencer(text=prompt, think=True, **inference_hyper)
-
-	print(output_dict['text'])
-	save_path = "outputs/gen_inference_with_thinking_output.jpg"
-	output_dict['image'].save(save_path)
-	print(f"Image saved to {save_path}")
-
-def editing_inference(prompt, image, enable_tayloreer = False):
-	inference_hyper=dict(
-			cfg_text_scale=4.0,
-			cfg_img_scale=2.0,
-			cfg_interval=[0.0, 1.0],
-			timestep_shift=3.0,
-			num_timesteps=50,
-			cfg_renorm_min=0.0,
-			cfg_renorm_type="text_channel",
-			enable_taylorseer=enable_tayloreer,
-	)
-	print(prompt)
-	print('-' * 10)
-	output_dict = inferencer(text=prompt, image=image, **inference_hyper)
-	save_path = "outputs/editing_inference_output.jpg"
-	output_dict['image'].save(save_path)
-	print(f"Image saved to {save_path}")
-
-def editing_inference_with_thinking(prompt, image, enable_taylorseer = False, save_path="outputs/editing_inference_with_thinking_output.jpg"):
-	inference_hyper=dict(
-			max_think_token_n=1000,
-			do_sample=False,
-			# text_temperature=0.3,
-			cfg_text_scale=4.0,
-			cfg_img_scale=2.0,
-			cfg_interval=[0.0, 1.0],
-			timestep_shift=3.0,
-			num_timesteps=50,
-			cfg_renorm_min=0.0,
-			cfg_renorm_type="text_channel",
-			enable_taylorseer=enable_taylorseer,
-	)
-	print(prompt)
-	print('-' * 10)
-
-	output_dict = inferencer(text=prompt, image=image, think=True, **inference_hyper)
-	print(output_dict['text'])
-	output_dict['image'].save(save_path)
-	print(f"Image saved to {save_path}")
-
-def understanding_inference(prompt, image):
-	inference_hyper=dict(
-		max_think_token_n=1000,
-		do_sample=False,
-		# text_temperature=0.3,
-	)
-	print(prompt)
-	print('-'*10)
-	output_dict = inferencer(image=image, text=prompt, understanding_output=True, **inference_hyper)
-	print(output_dict['text'])
-
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description="Image editing with text instructions")
 	parser.add_argument("--threshold", type=float, help="New attention probability threshold to set for sparsity in attention mechanism.")
@@ -254,16 +58,225 @@ if __name__ == "__main__":
 	parser.add_argument("--save_dir", type=str, default="qkv_attn_probs_dump", help="Directory to save the attention probabilities.")
 	parser.add_argument("--is_truncate", action='store_true', help="Whether to truncate the attention probabilities to test the robustness.")
 	args = parser.parse_args()
-	if args.threshold is not None:
-		print(f"Setting new attention probability threshold to {args.threshold}")
-		set_new_threshold(args.threshold)
 
-	if args.is_save:
-		set_save(True)
-	if args.save_dir:
-		set_dump_dir(args.save_dir)
-	if args.is_truncate:
-		set_truncate(True)
+	attention_backend = "naive_sparse_quant"
+	base_attention = TrickAttention(
+		attention_backend=attention_backend,
+		sparse_gsize=10, sparse_topk=0.2, sparse_threshold=args.threshold if args.threshold is not None else 4e-5,
+		quant_gsize=32,
+		posterior_truncate_threshold=args.threshold if args.threshold is not None else 4e-5,
+		save_dir=args.save_dir if args.save_dir else "attn_probs_qkv_dump_tmp",
+		is_save=args.is_save, is_plot=False, is_truncate=args.is_truncate,
+		plot_dir="plot/sparse_attention_scores", heads_to_plot=[0, 1, 2]
+	)
+
+	model_path = "./models/BAGEL-7B-MoT"  # Download from https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT
+
+	# LLM config preparing
+	llm_config = Qwen2Config.from_json_file(os.path.join(model_path, "llm_config.json"))
+	llm_config.qk_norm = True
+	llm_config.tie_word_embeddings = False
+	llm_config.layer_module = "Qwen2MoTDecoderLayer"
+
+	# ViT config preparing
+	vit_config = SiglipVisionConfig.from_json_file(os.path.join(model_path, "vit_config.json"))
+	vit_config.rope = False
+	vit_config.num_hidden_layers = vit_config.num_hidden_layers - 1
+
+	# VAE loading
+	vae_model, vae_config = load_ae(local_path=os.path.join(model_path, "ae.safetensors"))
+
+	# Bagel config preparing
+	config = BagelConfig(
+			visual_gen=True,
+			visual_und=True,
+			llm_config=llm_config, 
+			vit_config=vit_config,
+			vae_config=vae_config,
+			vit_max_num_patch_per_side=70,
+			connector_act='gelu_pytorch_tanh',
+			latent_patch_size=2,
+			max_latent_size=64,
+	)
+
+	with init_empty_weights():
+			language_model = Qwen2ForCausalLM(llm_config, trick_attn=base_attention)
+			vit_model      = SiglipVisionModel(vit_config)
+			model          = Bagel(language_model, vit_model, config)
+			model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config, meta=True)
+
+	# Tokenizer Preparing
+	tokenizer = Qwen2Tokenizer.from_pretrained(model_path)
+	tokenizer, new_token_ids, _ = add_special_tokens(tokenizer)
+
+	# Image Transform Preparing
+	vae_transform = ImageTransform(1024, 512, 16)
+	vit_transform = ImageTransform(980, 224, 14)
+	# vae_transform = data.transforms.ImageTransform(1024, 512, 16)
+	# vit_transform = data.transforms.ImageTransform(980, 224, 14)
+	# vit_transform = ImageTransform(1024, 224, 14)
+
+	max_mem_per_gpu = "80GiB"  # Modify it according to your GPU setting. On an A100, 80 GiB is sufficient to load on a single GPU.
+
+	device_map = infer_auto_device_map(
+			model,
+			max_memory={i: max_mem_per_gpu for i in range(torch.cuda.device_count())},
+			no_split_module_classes=["Bagel", "Qwen2MoTDecoderLayer"],
+	)
+	print(device_map)
+
+	same_device_modules = [
+			'language_model.model.embed_tokens',
+			'time_embedder',
+			'latent_pos_embed',
+			'vae2llm',
+			'llm2vae',
+			'connector',
+			'vit_pos_embed'
+	]
+
+	if torch.cuda.device_count() == 1:
+			first_device = device_map.get(same_device_modules[0], "cuda:0")
+			for k in same_device_modules:
+					if k in device_map:
+							device_map[k] = first_device
+					else:
+							device_map[k] = "cuda:0"
+	else:
+			first_device = device_map.get(same_device_modules[0])
+			for k in same_device_modules:
+					if k in device_map:
+							device_map[k] = first_device
+
+	# Thanks @onion-liu: https://github.com/ByteDance-Seed/Bagel/pull/8
+	model = load_checkpoint_and_dispatch(
+			model,
+			checkpoint=os.path.join(model_path, "ema.safetensors"),
+			device_map=device_map,
+			offload_buffers=True,
+			dtype=torch.bfloat16,
+			force_hooks=True,
+			offload_folder="/tmp/offload"
+	)
+
+	model = model.eval()
+	print('Model loaded')
+
+	seed = 500
+	set_seed(seed)
+
+	inferencer = InterleaveInferencer(
+			model=model, 
+			vae_model=vae_model, 
+			tokenizer=tokenizer, 
+			vae_transform=vae_transform, 
+			vit_transform=vit_transform, 
+			new_token_ids=new_token_ids
+	)
+
+	def gen_inference(prompt, enable_taylorseer = False):
+		inference_hyper=dict(
+			cfg_text_scale=4.0,
+			cfg_img_scale=1.0,
+			cfg_interval=[0.4, 1.0],
+			timestep_shift=3.0,
+			num_timesteps=50,
+			cfg_renorm_min=0.0,
+			cfg_renorm_type="global",
+			enable_taylorseer=enable_taylorseer,
+		)
+		print(prompt)
+		print('-' * 10)
+		output_dict = inferencer(text=prompt, **inference_hyper)
+
+		save_path = "outputs/gen_inference_output.jpg"
+		output_dict['image'].save(save_path)
+		print(f"Image saved to {save_path}")
+
+	def gen_inference_with_thinking(prompt, enable_taylorseer = False):
+		inference_hyper=dict(
+			max_think_token_n=1000,
+			do_sample=False,
+			# text_temperature=0.3,
+			cfg_text_scale=4.0,
+			cfg_img_scale=1.0,
+			cfg_interval=[0.4, 1.0],
+			timestep_shift=3.0,
+			num_timesteps=50,
+			cfg_renorm_min=0.0,
+			cfg_renorm_type="global",
+			enable_taylorseer=enable_taylorseer,
+		)
+		print(prompt)
+		print('-' * 10)
+		output_dict = inferencer(text=prompt, think=True, **inference_hyper)
+
+		print(output_dict['text'])
+		save_path = "outputs/gen_inference_with_thinking_output.jpg"
+		output_dict['image'].save(save_path)
+		print(f"Image saved to {save_path}")
+
+	def editing_inference(prompt, image, enable_tayloreer = False):
+		inference_hyper=dict(
+				cfg_text_scale=4.0,
+				cfg_img_scale=2.0,
+				cfg_interval=[0.0, 1.0],
+				timestep_shift=3.0,
+				num_timesteps=50,
+				cfg_renorm_min=0.0,
+				cfg_renorm_type="text_channel",
+				enable_taylorseer=enable_tayloreer,
+		)
+		print(prompt)
+		print('-' * 10)
+		output_dict = inferencer(text=prompt, image=image, **inference_hyper)
+		save_path = "outputs/editing_inference_output.jpg"
+		output_dict['image'].save(save_path)
+		print(f"Image saved to {save_path}")
+
+	def editing_inference_with_thinking(prompt, image, enable_taylorseer = False, save_path="outputs/editing_inference_with_thinking_output.jpg"):
+		inference_hyper=dict(
+				max_think_token_n=1000,
+				do_sample=False,
+				# text_temperature=0.3,
+				cfg_text_scale=4.0,
+				cfg_img_scale=2.0,
+				cfg_interval=[0.0, 1.0],
+				timestep_shift=3.0,
+				num_timesteps=50,
+				cfg_renorm_min=0.0,
+				cfg_renorm_type="text_channel",
+				enable_taylorseer=enable_taylorseer,
+		)
+		print(prompt)
+		print('-' * 10)
+
+		output_dict = inferencer(text=prompt, image=image, think=True, **inference_hyper)
+		print(output_dict['text'])
+		output_dict['image'].save(save_path)
+		print(f"Image saved to {save_path}")
+
+	def understanding_inference(prompt, image):
+		inference_hyper=dict(
+			max_think_token_n=1000,
+			do_sample=False,
+			# text_temperature=0.3,
+		)
+		print(prompt)
+		print('-'*10)
+		output_dict = inferencer(image=image, text=prompt, understanding_output=True, **inference_hyper)
+		print(output_dict['text'])
+
+	# if args.threshold is not None:
+	# 	print(f"Setting new attention probability threshold to {args.threshold}")
+	# 	set_new_threshold(args.threshold)
+
+	# if args.is_save:
+	# 	set_save(True)
+	# if args.save_dir:
+	# 	set_dump_dir(args.save_dir)
+	# if args.is_truncate:
+	# 	set_truncate(True)
 
 	# set_new_threshold(0.0)
 	# gen_inference("A female cosplayer portraying an ethereal fairy or elf, wearing a flowing dress made of delicate fabrics in soft, mystical colors like emerald green and silver. She has pointed ears, a gentle, enchanting expression, and her outfit is adorned with sparkling jewels and intricate patterns. The background is a magical forest with glowing plants, mystical creatures, and a serene atmosphere.")
@@ -282,12 +295,12 @@ if __name__ == "__main__":
 	# understanding_inference("Give a description of this car.", image3)
 
 	if args.is_truncate and args.is_save:
-		sparsity = get_sparsity()
+		sparsity = base_attention.get_sparsity()
 		write_txt = f"Sparsity levels for each timestep and layer:\n{sparsity}" + "\nAverage sparsity per layer:\n" + str(np.mean(sparsity, axis=0))
 		with open(os.path.join(args.save_dir, "sparsity_levels.txt"), "w") as f:
 			f.write(write_txt)
 		print(sparsity)
 	else:
-		sparsity = get_sparsity()
+		sparsity = base_attention.get_sparsity()
 		print(f"Sparsity for VAE + ViT:\n" + str(np.mean(np.mean(sparsity[0], axis=0))))
 		print(f"Sparsity for LLM:\n" + str(np.mean(np.mean(sparsity[1], axis=0))))
