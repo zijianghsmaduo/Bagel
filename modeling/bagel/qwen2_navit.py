@@ -523,6 +523,7 @@ class PackedAttentionMoT(Qwen2Attention):
 				#
 				timestep: Optional[int] = None,
 				layer_idx: Optional[int] = None,
+				cfg_type: Optional[str] = None,
 		):
 				if mode == 'und':
 						packed_query_states = self.q_proj(packed_query_sequence).view(-1, self.num_heads, self.head_dim)
@@ -621,47 +622,9 @@ class PackedAttentionMoT(Qwen2Attention):
 						timestep=timestep,
 						layer_idx=layer_idx,
 						kv_cache=kv_cache,
+						cfg_type=cfg_type,
 					)
 
-				# packed_attn_output_ref = flash_attn_varlen_func(
-				# 		q=packed_query_states,
-				# 		k=merged_key_states,
-				# 		v=merged_value_states,
-				# 		cu_seqlens_q=cu_seqlens_q.to(torch.int32),
-				# 		cu_seqlens_k=cu_seqlens_k.to(torch.int32),
-				# 		max_seqlen_q=max(query_lens).item(),
-				# 		max_seqlen_k=max(key_values_lens).item(),
-				# 		causal=is_causal,
-				# )
-
-				# packed_attn_output = naive_varlen_attention(
-				# 		packed_query_states=packed_query_states,
-				# 		merged_key_states=merged_key_states,
-				# 		merged_value_states=merged_value_states,
-				# 		cu_seqlens_q=cu_seqlens_q.to(torch.int32),
-				# 		cu_seqlens_k=cu_seqlens_k.to(torch.int32),
-				# 		# max_seqlen_q=max(query_lens).item(),
-				# 		# max_seqlen_k=max(key_values_lens).item(),
-				# 		causal=is_causal,
-				# 		mode=mode,
-				# 		timestep=timestep,
-				# 		layer_idx=layer_idx,
-				# )
-
-				# packed_attn_output = naive_verlen_sparse_attention(
-				# 	packed_query_states=packed_query_states,
-				# 	merged_key_states=merged_key_states,
-				# 	merged_value_states=merged_value_states,
-				# 	cu_seqlens_q=cu_seqlens_q.to(torch.int32),
-				# 	cu_seqlens_k=cu_seqlens_k.to(torch.int32),
-				# 	# max_seqlen_q=max(query_lens).item(),
-				# 	# max_seqlen_k=max(key_values_lens).item(),
-				# 	causal=is_causal,
-				# 	mode=mode,
-				# 	timestep=timestep,
-				# 	layer_idx=layer_idx,
-				# 	kv_cache=kv_cache,
-				# )
 				# comp_mse(packed_attn_output_ref, packed_attn_output, mode, layer_idx, timestep)
 
 				packed_attn_output = packed_attn_output.reshape(-1, self.hidden_size)
@@ -850,6 +813,7 @@ class Qwen2MoTDecoderLayer(nn.Module):
 				#
 				timestep: Optional[int] = None,
 				layer_idx: Optional[int] = None,
+				cfg_type: Optional[str] = None,
 		) -> BaseNavitOutputWithPast:
 				
 				enable_taylorseer = getattr(self, 'enable_taylorseer', False)
@@ -885,6 +849,7 @@ class Qwen2MoTDecoderLayer(nn.Module):
 								#
 								timestep=timestep,
 								layer_idx=layer_idx,
+								cfg_type=cfg_type,
 						)
 						packed_query_sequence = residual + packed_query_sequence
 
@@ -1115,6 +1080,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
 				packed_vae_token_indexes=None,
 				packed_text_indexes=None,
 				timestep: Optional[int] = None,
+				cfg_type: Optional[str] = None,
 		) -> BaseNavitOutputWithPast:
 				
 				enable_taylorseer = getattr(self, 'enable_taylorseer', False)
@@ -1141,6 +1107,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
 				#
 				extra_inputs.update(
 						timestep=timestep,
+						cfg_type=cfg_type,
 				)
 				for layer_idx, decoder_layer in enumerate(self.layers):
 						if enable_taylorseer:
@@ -1261,6 +1228,7 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
 				packed_text_indexes=None,
 				#
 				timestep: Optional[int] = None,
+				cfg_type: Optional[str] = None,
 		) -> BaseNavitOutputWithPast:
 
 				outputs = self.model(
@@ -1278,6 +1246,7 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
 						packed_text_indexes=packed_text_indexes,
 						#
 						timestep=timestep,
+						cfg_type=cfg_type
 				)
 
 				return outputs

@@ -183,7 +183,7 @@ class BlockQuantize:
 			x: (H, L, D)
 			x_mask: (H, L) True means masked position
 		"""
-		print("here in block INT4 quantize")
+		# print("here in block INT4 quantize")
 		H, L, D = x.shape
 		assert D % self.group_size == 0, "D must be divisible by group_size"
 		num_groups = D // self.group_size

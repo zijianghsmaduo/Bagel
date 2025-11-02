@@ -307,6 +307,14 @@ def kv_extract_global(kv, head=-1):
   else:
     kv = kv[head]
   return kv
+
+def q_extract_global(q, head=-1):
+  assert head < q.shape[0], f"Head index {head} out of range for attention map with {q.shape[0]} heads."
+  if head < 0:
+    q = q.mean(dim=0)
+  else:
+    q = q[head]
+  return q
   
 def gen_vae_vit_attn_map(load_dir = "attn_probs_qkv_dump", is_truncate = False, min_threshold = 4e-5, heads_to_plot = None, name=""):
   if heads_to_plot is None:
@@ -696,6 +704,131 @@ def kvcache_global_value_map(load_dir="attn_probs_qkv_dump", elem='k', name='', 
       plt.close(fig)
       print(f"Saved figure to {os.path.join(figure_path, figure_name)}")
 
+def compute_cosine_similarity(tensor1, tensor2):
+    assert tensor1.shape == tensor2.shape, "Input tensors must have the same shape."
+    H, L, D = tensor1.shape
+    numerator = (tensor1 * tensor2).sum(dim=-1)
+    assert numerator.shape == (H, L), f"Unexpected numerator shape: {numerator.shape}"
+    denominator = torch.norm(tensor1, dim=-1) * torch.norm(tensor2, dim=-1)
+    assert denominator.shape == (H, L), f"Unexpected denominator shape: {denominator.shape}"
+    cosine_similarity = numerator / denominator
+    cosine_similarity = torch.where(denominator == 0, torch.tensor(0.0, device=denominator.device), cosine_similarity)
+    return cosine_similarity
+
+def compute_mse_similarity(tensor1, tensor2):
+    assert tensor1.shape == tensor2.shape, "Input tensors must have the same shape."
+    H, L, D = tensor1.shape
+    mse = torch.mean((tensor1 - tensor2) ** 2, dim=-1)
+    assert mse.shape == (H, L), f"Unexpected MSE shape: {mse.shape}"
+    return mse
+
+def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', heads_to_plot=None, timestep=20):
+  if heads_to_plot is None:
+    heads_to_plot = list(range(-1, 28))
+
+  fn = q_extract_global
+  # layer_idxes = [0, 5, 10, 15, 20, 25, 27]
+  layer_idxes = range(0, 28)
+  if elem not in ['q']:
+    raise ValueError(f"Invalid elem: {elem}. Must be 'q'.")
+
+  # --- 提前创建好 norm 对象和 cmap ---
+  from matplotlib.colors import Normalize, PowerNorm, LogNorm
+  cmap_to_use = "inferno_r" # 统一颜色图
+  vmin, vmax = None, None
+
+  # vmax_estimate = 0.1
+  # norm_to_use = LogNorm(vmin=1e-8, vmax=vmax_estimate)
+  norm_to_use = None
+
+  figure_path = f"plot/{elem}_cfg_similarity_global_{name}/t_{timestep}"
+  if not os.path.exists(figure_path):
+    os.makedirs(figure_path)
+  write_log = f"load_dir: {load_dir}\nelem: {elem}\nname: {name}\n"
+  with open(os.path.join(figure_path, f"{elem}_cfg_similarity_global_{name}log.txt"), 'w') as f:
+    f.write(write_log)
+  
+  for layer_idx in layer_idxes:
+      normal_file = f"./{load_dir}/gen_qkv_attn_probs_normal_layer_{layer_idx}_ts_{timestep}_batch_0.pt"
+      cfg_text_file = f"./{load_dir}/gen_qkv_attn_probs_cfg_text_layer_{layer_idx}_ts_{timestep}_batch_0.pt"
+      cfg_image_file = f"./{load_dir}/gen_qkv_attn_probs_cfg_img_layer_{layer_idx}_ts_{timestep}_batch_0.pt"
+      
+      normal_q = torch.load(normal_file)[0][elem]
+      cfg_text_q = torch.load(cfg_text_file)[0][elem]
+      cfg_image_q = torch.load(cfg_image_file)[0][elem]
+
+      # tmp_file = f"./{load_dir}/gen_qkv_attn_probs_layer_{layer_idx}_ts_{timestep}_batch_0.pt"
+      # all_entries = torch.load(tmp_file)
+      # print(f"Processing: {tmp_file}")
+      print(f"Processing Layer: {layer_idx}")
+
+      sns.set_theme(style="dark")
+      
+      num_heads = 2
+      ncols = 2
+      nrows = (num_heads + ncols - 1) // ncols
+      fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 5, nrows * 5), constrained_layout=True)
+      fig.suptitle(f'Attention Heads for Layer {layer_idx}, Timestep {timestep}', fontsize=24)
+      axes_flat = axes.flatten()
+
+      # similarity_cfg_text = compute_cosine_similarity(normal_q, cfg_text_q)
+      # similarity_cfg_image = compute_cosine_similarity(normal_q, cfg_image_q)
+      similarity_cfg_text = compute_mse_similarity(normal_q, cfg_text_q)
+      similarity_cfg_image = compute_mse_similarity(normal_q, cfg_image_q)
+
+      data_aspect_ratio = similarity_cfg_text.shape[1] / similarity_cfg_text.shape[0]
+
+      kv_plot(similarity_cfg_text, ax=axes_flat[0], title="MSE Similarity with CFG Text",
+                         vmin=vmin, vmax=vmax, 
+                         norm=norm_to_use,      # 传入统一的 norm 对象
+                         cmap=cmap_to_use, 
+                         xlabel="Query", ylabel="Head",
+                         tick_density=100, square=False,
+                         aspect_ratio=data_aspect_ratio)
+      
+      kv_plot(similarity_cfg_image, ax=axes_flat[1], title="MSE Similarity with CFG Image",
+                         vmin=vmin, vmax=vmax, 
+                         norm=norm_to_use,      # 传入统一的 norm 对象
+                         cmap=cmap_to_use, 
+                         xlabel="Query", ylabel="Head",
+                         tick_density=100, square=False,
+                         aspect_ratio=data_aspect_ratio)
+      
+      # for i, head in enumerate(heads_to_plot):
+      #     ax = axes_flat[i]
+      #     # entry = all_entries[0]
+      #     # kv = entry[elem]
+
+      #     print(f"Original Tensor Shape: {kv.shape}")
+      #     kv = fn(kv, head=head)
+      #     print(f"Processed Tensor Shape: {kv.shape}")
+      #     data_aspect_ratio = kv.shape[1] / kv.shape[0]
+
+      #     postfix1 = f"Head {head}" if head >=0 else "Mean Head"
+          
+      #     print(f"Plotting {postfix1} for Layer {layer_idx}")
+      #     # --- 调用修改后的 attention_plot 函数 ---
+      #     kv_plot(kv, ax=ax, title=postfix1,
+      #                    vmin=vmin, vmax=vmax, 
+      #                    norm=norm_to_use,      # 传入统一的 norm 对象
+      #                    cmap=cmap_to_use, 
+      #                    xlabel="Dim", ylabel="Key",
+      #                    tick_density=100, square=False,
+      #                    aspect_ratio=data_aspect_ratio)      # 传入统一的 cmap
+
+      for i in range(num_heads, len(axes_flat)):
+          axes_flat[i].set_visible(False)
+      # --- 添加一个全局颜色条 ---
+      sm = plt.cm.ScalarMappable(cmap=cmap_to_use, norm=norm_to_use)
+      sm.set_array([])
+      fig.colorbar(sm, ax=axes.ravel().tolist(), shrink=0.6, aspect=20, label="Attention Score")
+
+      # --- 保存整个大图 ---
+      figure_name = f"layer_{layer_idx}_all_heads.png"
+      plt.savefig(os.path.join(figure_path, figure_name), dpi=150)
+      plt.close(fig)
+      print(f"Saved figure to {os.path.join(figure_path, figure_name)}")
+
 if __name__ == "__main__":
   # gen_vae_vit_attn_map(load_dir = "attn_probs_qkv_dump_new", is_truncate = True, min_threshold = 4e-5, heads_to_plot=None, name="new_")
   # gen_vae_vit_attn_map(load_dir = "attn_probs_qkv_dump", is_truncate = True, min_threshold = 4e-5, heads_to_plot=None)
@@ -703,7 +836,7 @@ if __name__ == "__main__":
   # gen_global_attn_map(load_dir = "attn_probs_qkv_dump_octupusy_thredshold", is_truncate = False, min_threshold = 4e-5, heads_to_plot=None, name='_octupusy_thredshold_with_frame')
   # kvcache_global_value_map(load_dir="attn_probs_qkv_dump_octupusy_thredshold", elem='k', name='octupusy_', heads_to_plot=None)
   parser = argparse.ArgumentParser(description="Generate Attention Map Visualizations")
-  parser.add_argument('--mode', type=str, choices=['gen_vae_vit', 'gen_global', 'und_vae_vit', 'kvcache_global_value', 'gen_global_special_tokens'], required=False, default='gen_global',
+  parser.add_argument('--mode', type=str, choices=['gen_vae_vit', 'gen_global', 'und_vae_vit', 'kvcache_global_value', 'gen_global_special_tokens', 'cfg_similarity'], required=False, default='gen_global',
                       help="Mode of operation: 'gen_vae_vit', 'gen_global', 'und_vae_vit', 'kvcache_global_value', 'gen_global_special_tokens'")
   parser.add_argument('--load_dir', type=str, default='attn_probs_qkv_dump',
                       help="Directory to load attention probabilities from")
@@ -743,3 +876,6 @@ if __name__ == "__main__":
       gen_global_attn_map(load_dir=args.load_dir, timestep=args.timestep,
                           is_truncate=args.is_truncate, min_threshold=args.min_threshold,
                           layer_idxes=layer_idxes, name=args.name, special_tokens=True, heads_to_plot=heads)
+  elif args.mode == 'cfg_similarity':
+      layer_idxes = list(range(args.layer_base, args.layer_base + args.layer_bias))
+      cfg_similarity_heatmap(load_dir=args.load_dir, name=args.name, heads_to_plot=heads, timestep=args.timestep)

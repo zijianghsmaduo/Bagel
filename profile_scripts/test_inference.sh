@@ -18,19 +18,23 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 export PYTHONPATH=.
-export CUDA_VISIBLE_DEVICES=5
+export CUDA_VISIBLE_DEVICES=6
 
-# is_save=--is_save
+is_save=--is_save
 # is_truncate=--is_truncate
-save_dir="attn_probs_mask_sparse_dump_octupusy_1_02"
-threshold=4e-4
+save_dir="q_cfg_dump_octupusy_naive_sparse_quant_threshold_4e-5"
+threshold=4e-5
 # threshold=1
 
-CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python3 ./profile/test_inference.py $is_save $is_truncate --save_dir $save_dir --threshold $threshold
+## Attention backend options: naive, naive_truncate, naive_sparse, naive_sparse_quant
+# attn_backend="naive"
+attn_backend="naive_sparse_quant"
+
+CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python3 ./profile/test_inference.py $is_save $is_truncate --save_dir $save_dir --threshold $threshold --attn_backend $attn_backend &
+
+wait
 
 echo "is_save: $is_save" >> $save_dir/arg_log.txt
 echo "is_truncate: $is_truncate" >> $save_dir/arg_log.txt
 echo "save_dir: $save_dir" >> $save_dir/arg_log.txt
 echo "threshold: $threshold" >> $save_dir/arg_log.txt
-
-wait

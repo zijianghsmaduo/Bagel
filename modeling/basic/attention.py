@@ -21,13 +21,14 @@ from modeling.basic.util import compute_coverage
 
 
 class TrickAttention:
-  def __init__(self, attention_backend: str = "naive", 
-               sparse_gsize: int = 10, sparse_topk: float = 0.2, sparse_threshold: float = 4e-5,
-               quant_gsize: int = 32,
-               posterior_truncate_threshold: float = 4e-5, save_dir: str = "attn_probs_qkv_dump_new",
-               is_save: bool = False, is_plot: bool = False, is_truncate: bool = False,
-               plot_dir: str = "plot/sparse_attention_scores", heads_to_plot: Optional[list] = None):
-    
+  def __init__(
+    self, attention_backend: str = "naive", 
+    sparse_gsize: int = 10, sparse_topk: float = 0.2, sparse_threshold: float = 4e-5,
+    quant_gsize: int = 32,
+    posterior_truncate_threshold: float = 4e-5, save_dir: str = "attn_probs_qkv_dump_new",
+    is_save: bool = False, is_plot: bool = False, is_truncate: bool = False,
+    plot_dir: str = "plot/sparse_attention_scores", heads_to_plot: Optional[list] = None
+  ):
     print("Initializing TrickAttention with settings: ")
     print(f"  attention_backend: {attention_backend}")
     print(f"  sparse_gsize: {sparse_gsize}")
@@ -35,6 +36,7 @@ class TrickAttention:
     print(f"  sparse_threshold: {sparse_threshold}")
     print(f"  quant_gsize: {quant_gsize}")
     print(f"  posterior_truncate_threshold: {posterior_truncate_threshold}")
+    print(f"  is_save: {is_save}")
     print(f"  save_dir: {save_dir}")
 
     self.block_sparsifier = BlockSparsify(group_size=sparse_gsize, top_k=sparse_topk, threshold=sparse_threshold)
@@ -80,6 +82,22 @@ class TrickAttention:
     self_range = kv_cache.gen_image
     return (self_range[0], self_range[1]+1) if self_range is not None else None
 
+  def save(
+    self, entry_to_save: dict, mode: str, batch_idx: int,
+    timestep: Optional[int] = None, layer_idx: Optional[int] = None, 
+    cfg_type: Optional[str] = None
+  ):
+    should_save = layer_idx is not None and self.is_save and timestep is not None and timestep >= 0
+    if not should_save:
+      return
+    assert (mode == "gen" and timestep is not None and timestep >= 0 and cfg_type is not None) or (mode == "und" and cfg_type is None), "Invalid save conditions."
+    
+    filename = f"{mode}_qkv_attn_probs_layer_{layer_idx}_ts_{timestep}_batch_{batch_idx}.pt" if mode == "und" else f"{mode}_qkv_attn_probs_{cfg_type}_layer_{layer_idx}_ts_{timestep}_batch_{batch_idx}.pt"
+    os.makedirs(self.save_dir, exist_ok=True)
+    save_path = os.path.join(self.save_dir, filename)
+    if not os.path.exists(save_path):
+      torch.save([entry_to_save], save_path)
+
   def naive_varlen_attention(
       self,
       packed_query_states,   # (total_q, n_heads, head_dim)
@@ -91,6 +109,7 @@ class TrickAttention:
       mode: str = "und",
       timestep: Optional[int] = None,
       layer_idx: Optional[int] = None,
+      cfg_type: Optional[str] = None,
   ):
       outputs = []
       B = cu_seqlens_q.numel() - 1
@@ -137,38 +156,49 @@ class TrickAttention:
 
           attn_probs = torch.softmax(attn_scores, dim=-1) # (n_heads, Lq, Lk)
 
+          entry_to_save = {
+              "q": q_bmm.cpu(),
+              # "k": k_bmm.cpu(),
+              # "v": v_bmm.cpu(),
+              # "attn_probs": attn_probs.cpu(),
+              # "data": attn_probs.cpu()
+          }
+          self.save(
+            entry_to_save=entry_to_save, mode=mode, 
+            timestep=timestep, layer_idx=layer_idx, 
+            batch_idx=b, cfg_type=cfg_type
+          )
 
+          # should_save = layer_idx is not None and timestep is not None and self.is_save
+          # if should_save:
+          #     os.makedirs(self.save_dir, exist_ok=True)
+          # if should_save:
+          #     filename = f"{mode}_qkv_attn_probs_layer_{layer_idx}_ts_{timestep}_batch_{b}.pt"
+          #     save_path = os.path.join(self.save_dir, filename)
 
-          should_save = layer_idx is not None and timestep is not None and self.is_save
-          if should_save:
-              os.makedirs(self.save_dir, exist_ok=True)
-          if should_save:
-              filename = f"{mode}_qkv_attn_probs_layer_{layer_idx}_ts_{timestep}_batch_{b}.pt"
-              save_path = os.path.join(self.save_dir, filename)
+          #     # 2. 将元数据和数据打包成一个字典
+          #     entry_to_save = {
+          #         "q": q_bmm.cpu(),
+          #         "k": k_bmm.cpu(),
+          #         "v": v_bmm.cpu(),
+          #         "attn_probs": attn_probs.cpu(),
+          #         # "data": attn_probs.cpu()
+          #     }
 
-              # 2. 将元数据和数据打包成一个字典
-              entry_to_save = {
-                  "q": q_bmm.cpu(),
-                  "k": k_bmm.cpu(),
-                  "v": v_bmm.cpu(),
-                  "attn_probs": attn_probs.cpu(),
-                  # "data": attn_probs.cpu()
-              }
-
-              # 3. 加载、追加并保存
-              if not os.path.exists(save_path):
-                  # try:
-                  #     existing_data = torch.load(save_path)
-                  #     if isinstance(existing_data, list):
-                  #         existing_data.append(entry_to_save)
-                  #         torch.save(existing_data, save_path)
-                  #     else: # 兼容旧格式
-                  #         torch.save([existing_data, entry_to_save], save_path)
-                  # except Exception as e:
-                  #     print(f"Could not append to {save_path}: {e}. Overwriting.")
-                  #     torch.save([entry_to_save], save_path)
-              # else:
-                  torch.save([entry_to_save], save_path)
+          #     # 3. 加载、追加并保存
+          #     if not os.path.exists(save_path):
+          #         # try:
+          #         #     existing_data = torch.load(save_path)
+          #         #     if isinstance(existing_data, list):
+          #         #         existing_data.append(entry_to_save)
+          #         #         torch.save(existing_data, save_path)
+          #         #     else: # 兼容旧格式
+          #         #         torch.save([existing_data, entry_to_save], save_path)
+          #         # except Exception as e:
+          #         #     print(f"Could not append to {save_path}: {e}. Overwriting.")
+          #         #     torch.save([entry_to_save], save_path)
+          #     # else:
+          #         torch.save([entry_to_save], save_path)
           
           context_bmm = torch.bmm(attn_probs, v_bmm) # (n_heads, Lq, d)
           context = context_bmm.transpose(0, 1) # (Lq, n_heads, d)
@@ -189,11 +219,11 @@ class TrickAttention:
       mode: str = "und",
       timestep: Optional[int] = None,
       layer_idx: Optional[int] = None,
+      cfg_type: Optional[str] = None,
   ):
       outputs = []
       B = cu_seqlens_q.numel() - 1
       D = packed_query_states.shape[-1]
-      # scale = packed_query_states.size(-1) ** -0.5
       min_threshold = self.posterior_truncate_threshold
       vae_vit_range = self.get_vae_vit_range(kv_cache)
       self_range = self.get_self_range(kv_cache)
@@ -251,37 +281,49 @@ class TrickAttention:
               self.sparsity[1][timestep][layer_idx] = torch.mean(to_zero_self.float()).item()
               attn_probs[:, :, self_range[0]:self_range[1]] = attn_probs_self.masked_fill(to_zero_self, 0.0)
 
+          entry_to_save = {
+              "q": q_bmm.cpu(),
+              "k": k_bmm.cpu(),
+              "v": v_bmm.cpu(),
+              "attn_probs": attn_probs.cpu(),
+              # "data": attn_probs.cpu()
+          }
+          self.save(
+            entry_to_save=entry_to_save, mode=mode, 
+            timestep=timestep, layer_idx=layer_idx, 
+            batch_idx=b, cfg_type=cfg_type
+          )
 
-          should_save = layer_idx is not None and timestep is not None and self.is_save
-          if should_save:
-              os.makedirs(self.save_dir, exist_ok=True)
-          if should_save:
-              filename = f"{mode}_qkv_attn_probs_layer_{layer_idx}_ts_{timestep}_batch_{b}.pt"
-              save_path = os.path.join(self.save_dir, filename)
+          # should_save = layer_idx is not None and timestep is not None and self.is_save
+          # if should_save:
+          #     os.makedirs(self.save_dir, exist_ok=True)
+          # if should_save:
+          #     filename = f"{mode}_qkv_attn_probs_layer_{layer_idx}_ts_{timestep}_batch_{b}.pt"
+          #     save_path = os.path.join(self.save_dir, filename)
 
-              # 2. 将元数据和数据打包成一个字典
-              entry_to_save = {
-                  "q": q_bmm.cpu(),
-                  "k": k_bmm.cpu(),
-                  "v": v_bmm.cpu(),
-                  "attn_probs": attn_probs.cpu(),
-                  # "data": attn_probs.cpu()
-              }
+          #     # 2. 将元数据和数据打包成一个字典
+          #     entry_to_save = {
+          #         "q": q_bmm.cpu(),
+          #         "k": k_bmm.cpu(),
+          #         "v": v_bmm.cpu(),
+          #         "attn_probs": attn_probs.cpu(),
+          #         # "data": attn_probs.cpu()
+          #     }
 
-              # 3. 加载、追加并保存
-              if not os.path.exists(save_path):
-                  # try:
-                  #     existing_data = torch.load(save_path)
-                  #     if isinstance(existing_data, list):
-                  #         existing_data.append(entry_to_save)
-                  #         torch.save(existing_data, save_path)
-                  #     else: # 兼容旧格式
-                  #         torch.save([existing_data, entry_to_save], save_path)
-                  # except Exception as e:
-                  #     print(f"Could not append to {save_path}: {e}. Overwriting.")
-                  #     torch.save([entry_to_save], save_path)
-              # else:
-                  torch.save([entry_to_save], save_path)
+          #     # 3. 加载、追加并保存
+          #     if not os.path.exists(save_path):
+          #         # try:
+          #         #     existing_data = torch.load(save_path)
+          #         #     if isinstance(existing_data, list):
+          #         #         existing_data.append(entry_to_save)
+          #         #         torch.save(existing_data, save_path)
+          #         #     else: # 兼容旧格式
+          #         #         torch.save([existing_data, entry_to_save], save_path)
+          #         # except Exception as e:
+          #         #     print(f"Could not append to {save_path}: {e}. Overwriting.")
+          #         #     torch.save([entry_to_save], save_path)
+          #     # else:
+          #         torch.save([entry_to_save], save_path)
           
           context_bmm = torch.bmm(attn_probs, v_bmm) # (n_heads, Lq, d)
           context = context_bmm.transpose(0, 1) # (Lq, n_heads, d)
@@ -302,6 +344,7 @@ class TrickAttention:
       mode: str = "und",
       timestep: Optional[int] = None,
       layer_idx: Optional[int] = None,
+      cfg_type: Optional[str] = None,
   ):
       outputs = []
       B = cu_seqlens_q.numel() - 1
@@ -387,36 +430,48 @@ class TrickAttention:
                             ncols=6, cmap="inferno_r", tick_density=100, norm="log",
                             box_coords=None, box_style=None, figsize_per_plot=(5,5))
 
-          should_save = layer_idx is not None and timestep is not None and self.is_save
-          if should_save:
-              os.makedirs(self.save_dir, exist_ok=True)
-          if should_save:
-              filename = f"{mode}_qkv_attn_probs_ts_{timestep}_layer_{layer_idx}_batch_{b}.pt"
-              save_path = os.path.join(self.save_dir, filename)
+          entry_to_save = {
+              "q": q_bmm.cpu(),
+              "k": k_bmm.cpu(),
+              "v": v_bmm.cpu(),
+              "attn_probs": attn_probs.cpu(),
+              # "data": attn_probs.cpu()
+          }
+          self.save(
+            entry_to_save=entry_to_save, mode=mode, 
+            timestep=timestep, layer_idx=layer_idx, 
+            batch_idx=b, cfg_type=cfg_type
+          )
+          # should_save = layer_idx is not None and timestep is not None and self.is_save
+          # if should_save:
+          #     os.makedirs(self.save_dir, exist_ok=True)
+          # if should_save:
+          #     filename = f"{mode}_qkv_attn_probs_ts_{timestep}_layer_{layer_idx}_batch_{b}.pt"
+          #     save_path = os.path.join(self.save_dir, filename)
               
-              # 2. 将元数据和数据打包成一个字典
-              entry_to_save = {
-                  # "q": q_bmm.cpu(),
-                  # "k": k_bmm.cpu(),
-                  # "v": v_bmm.cpu(),
-                  "attn_probs": attn_probs.cpu(),
-                  "mask_sparse": mask_sparse.cpu(),
-              }
+          #     # 2. 将元数据和数据打包成一个字典
+          #     entry_to_save = {
+          #         # "q": q_bmm.cpu(),
+          #         # "k": k_bmm.cpu(),
+          #         # "v": v_bmm.cpu(),
+          #         "attn_probs": attn_probs.cpu(),
+          #         "mask_sparse": mask_sparse.cpu(),
+          #     }
 
-              # 3. 加载、追加并保存
-              if not os.path.exists(save_path):
-                  # try:
-                  #     existing_data = torch.load(save_path)
-                  #     if isinstance(existing_data, list):
-                  #         existing_data.append(entry_to_save)
-                  #         torch.save(existing_data, save_path)
-                  #     else: # 兼容旧格式
-                  #         torch.save([existing_data, entry_to_save], save_path)
-                  # except Exception as e:
-                  #     print(f"Could not append to {save_path}: {e}. Overwriting.")
-                  #     torch.save([entry_to_save], save_path)
-              # else:
-                  torch.save([entry_to_save], save_path)
+          #     # 3. 加载、追加并保存
+          #     if not os.path.exists(save_path):
+          #         # try:
+          #         #     existing_data = torch.load(save_path)
+          #         #     if isinstance(existing_data, list):
+          #         #         existing_data.append(entry_to_save)
+          #         #         torch.save(existing_data, save_path)
+          #         #     else: # 兼容旧格式
+          #         #         torch.save([existing_data, entry_to_save], save_path)
+          #         # except Exception as e:
+          #         #     print(f"Could not append to {save_path}: {e}. Overwriting.")
+          #         #     torch.save([entry_to_save], save_path)
+          #     # else:
+          #         torch.save([entry_to_save], save_path)
           
           context_bmm = torch.bmm(attn_probs, v_bmm) # (n_heads, Lq, d)
           context = context_bmm.transpose(0, 1) # (Lq, n_heads, d)
@@ -437,22 +492,12 @@ class TrickAttention:
       mode: str = "und",
       timestep: Optional[int] = None,
       layer_idx: Optional[int] = None,
+      cfg_type: Optional[str] = None,
   ):
       outputs = []
       B = cu_seqlens_q.numel() - 1
       D = packed_query_states.shape[-1]
-      # scale = packed_query_states.size(-1) ** -0.5
-      # vit_range = kv_cache.vit
-      # vae_range = kv_cache.vae
       vae_vit_range = self.get_vae_vit_range(kv_cache)
-      # if vit_range is not None and vae_range is not None:
-      #   vae_vit_range = (vae_range[0], vit_range[1]+1)
-      # elif vit_range is None and vae_range is None:
-      #   vae_vit_range = None
-      # elif vit_range is not None:
-      #   vae_vit_range = (vit_range[0], vit_range[1]+1)
-      # elif vae_range is not None:
-      #   vae_vit_range = (vae_range[0], vae_range[1]+1)
       min_threshold = self.posterior_truncate_threshold
 
       num_q_heads = packed_query_states.size(1)
@@ -478,8 +523,8 @@ class TrickAttention:
           k_bmm = k.transpose(0, 1)  # (n_heads, Lk, d)
           v_bmm = v.transpose(0, 1)  # (n_heads, Lk, d)
 
-          # q_bmm_quant_fp4, q_quant_scale = self.block_quantizer.quantize_int4(q_bmm)
-          q_bmm_quant_fp4, q_quant_scale = self.block_quantizer.quantize_nvfp4(q_bmm)
+          q_bmm_quant_fp4, q_quant_scale = self.block_quantizer.quantize_int4(q_bmm)
+          # q_bmm_quant_fp4, q_quant_scale = self.block_quantizer.quantize_nvfp4(q_bmm)
 
           attn_scores = torch.bmm(q_bmm, k_bmm.transpose(1, 2) / math.sqrt(D)) # (n_heads, Lq, Lk)
           ref_attn_probs = torch.softmax(attn_scores, dim=-1) # (n_heads, Lq, Lk)
@@ -492,11 +537,11 @@ class TrickAttention:
           q_range_tensor = torch.tensor([0, q_bmm.size(1)], device=q_bmm.device, dtype=torch.long)
           
           if vae_vit_range is not None:
-            if mode == "gen" and timestep is not None and timestep >= 0:
+            if mode == "gen" and timestep is not None and timestep >= 0 and cfg_type is not None and (cfg_type == "normal" or cfg_type == "cfg_text"):
               vae_vit_range_tensor = torch.tensor(vae_vit_range, device=q_bmm.device, dtype=torch.long)
               vae_vit_mask, representative_attn_scores = self.block_sparsifier.sparsify_kv_cache_threshold(q_bmm, k_bmm, q_range_tensor, vae_vit_range_tensor)
               vae_vit_mask = vae_vit_mask.to(torch.bool)
-              coverage = compute_coverage(ref_mask[:, q_range_tensor[0]:q_range_tensor[1], vae_vit_range_tensor[0]:vae_vit_range_tensor[1]], vae_vit_mask)
+              # coverage = compute_coverage(ref_mask[:, q_range_tensor[0]:q_range_tensor[1], vae_vit_range_tensor[0]:vae_vit_range_tensor[1]], vae_vit_mask)
               # plot_mask_heads(ref_mask[:, q_range_tensor[0]:q_range_tensor[1], vae_vit_range_tensor[0]:vae_vit_range_tensor[1]], heads=heads_to_plot, out_dir=f"{self.plot_dir}/ts_{timestep}_layer_{layer_idx}_batch_{b}",
               #                 filename=f"ref_mask.png",
               #                 ncols=6, cmap="inferno_r", tick_density=100, norm="log",
@@ -505,10 +550,10 @@ class TrickAttention:
               #                 filename=f"sparse_mask.png",
               #                 ncols=6, cmap="inferno_r", tick_density=100, norm="log",
               #                 box_coords=None, box_style=None, figsize_per_plot=(5,5))
-              if not os.path.exists(f"{self.plot_dir}/ts_{timestep}_layer_{layer_idx}_batch_{b}"):
-                os.makedirs(f"{self.plot_dir}/ts_{timestep}_layer_{layer_idx}_batch_{b}", exist_ok=True)
-              with open(f"{self.plot_dir}/ts_{timestep}_layer_{layer_idx}_batch_{b}/coverage.txt", "w") as f:
-                f.write(f"Coverage: {coverage}\n")
+              # if not os.path.exists(f"{self.plot_dir}/ts_{timestep}_layer_{layer_idx}_batch_{b}"):
+              #   os.makedirs(f"{self.plot_dir}/ts_{timestep}_layer_{layer_idx}_batch_{b}", exist_ok=True)
+              # with open(f"{self.plot_dir}/ts_{timestep}_layer_{layer_idx}_batch_{b}/coverage.txt", "w") as f:
+              #   f.write(f"Coverage: {coverage}\n")
               # assert(coverage == 1.0)
               mask_sparse[:, :, vae_vit_range_tensor[0]:vae_vit_range_tensor[1]] = vae_vit_mask
               self.sparsity[0][timestep][layer_idx] = torch.mean(vae_vit_mask.float()).item()
@@ -536,36 +581,48 @@ class TrickAttention:
                             ncols=6, cmap="inferno_r", tick_density=100, norm="log",
                             box_coords=None, box_style=None, figsize_per_plot=(5,5))
 
-          should_save = layer_idx is not None and timestep is not None and self.is_save
-          if should_save:
-              os.makedirs(self.save_dir, exist_ok=True)
-          if should_save:
-              filename = f"{mode}_qkv_attn_probs_ts_{timestep}_layer_{layer_idx}_batch_{b}.pt"
-              save_path = os.path.join(self.save_dir, filename)
+          entry_to_save = {
+              "q": q_bmm.cpu(),
+              # "k": k_bmm.cpu(),
+              # "v": v_bmm.cpu(),
+              # "attn_probs": attn_probs.cpu(),
+              # "data": attn_probs.cpu()
+          }
+          self.save(
+            entry_to_save=entry_to_save, mode=mode, 
+            timestep=timestep, layer_idx=layer_idx, 
+            batch_idx=b, cfg_type=cfg_type
+          )
+          # should_save = layer_idx is not None and timestep is not None and self.is_save
+          # if should_save:
+          #     os.makedirs(self.save_dir, exist_ok=True)
+          # if should_save:
+          #     filename = f"{mode}_qkv_attn_probs_ts_{timestep}_layer_{layer_idx}_batch_{b}.pt"
+          #     save_path = os.path.join(self.save_dir, filename)
               
-              # 2. 将元数据和数据打包成一个字典
-              entry_to_save = {
-                  # "q": q_bmm.cpu(),
-                  # "k": k_bmm.cpu(),
-                  # "v": v_bmm.cpu(),
-                  "attn_probs": attn_probs.cpu(),
-                  "mask_sparse": mask_sparse.cpu(),
-              }
+          #     # 2. 将元数据和数据打包成一个字典
+          #     entry_to_save = {
+          #         # "q": q_bmm.cpu(),
+          #         # "k": k_bmm.cpu(),
+          #         # "v": v_bmm.cpu(),
+          #         "attn_probs": attn_probs.cpu(),
+          #         "mask_sparse": mask_sparse.cpu(),
+          #     }
 
-              # 3. 加载、追加并保存
-              if not os.path.exists(save_path):
-                  # try:
-                  #     existing_data = torch.load(save_path)
-                  #     if isinstance(existing_data, list):
-                  #         existing_data.append(entry_to_save)
-                  #         torch.save(existing_data, save_path)
-                  #     else: # 兼容旧格式
-                  #         torch.save([existing_data, entry_to_save], save_path)
-                  # except Exception as e:
-                  #     print(f"Could not append to {save_path}: {e}. Overwriting.")
-                  #     torch.save([entry_to_save], save_path)
-              # else:
-                  torch.save([entry_to_save], save_path)
+          #     # 3. 加载、追加并保存
+          #     if not os.path.exists(save_path):
+          #         # try:
+          #         #     existing_data = torch.load(save_path)
+          #         #     if isinstance(existing_data, list):
+          #         #         existing_data.append(entry_to_save)
+          #         #         torch.save(existing_data, save_path)
+          #         #     else: # 兼容旧格式
+          #         #         torch.save([existing_data, entry_to_save], save_path)
+          #         # except Exception as e:
+          #         #     print(f"Could not append to {save_path}: {e}. Overwriting.")
+          #         #     torch.save([entry_to_save], save_path)
+          #     # else:
+          #         torch.save([entry_to_save], save_path)
           
           context_bmm = torch.bmm(attn_probs, v_bmm) # (n_heads, Lq, d)
           context = context_bmm.transpose(0, 1) # (Lq, n_heads, d)
@@ -576,6 +633,7 @@ class TrickAttention:
 
   def forward(self, **kwargs):
     if self.attention_backend == "naive":
+      kwargs.pop("kv_cache", None)  # kv_cache is not used in naive attention
       return self.naive_varlen_attention(**kwargs)
     elif self.attention_backend == "naive_truncate":
       return self.naive_varlen_posterior_truncate_attention(**kwargs)

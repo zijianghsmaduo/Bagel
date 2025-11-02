@@ -57,9 +57,10 @@ if __name__ == "__main__":
 	parser.add_argument("--is_save", action='store_true', help="Whether to save the attention probabilities for analysis.")
 	parser.add_argument("--save_dir", type=str, default="qkv_attn_probs_dump", help="Directory to save the attention probabilities.")
 	parser.add_argument("--is_truncate", action='store_true', help="Whether to truncate the attention probabilities to test the robustness.")
+	parser.add_argument("--attn_backend", type=str, default="naive_sparse_quant", help="Attention backend to use.")
 	args = parser.parse_args()
 
-	attention_backend = "naive_sparse_quant"
+	attention_backend = args.attn_backend
 	base_attention = TrickAttention(
 		attention_backend=attention_backend,
 		sparse_gsize=10, sparse_topk=0.2, sparse_threshold=args.threshold if args.threshold is not None else 4e-5,

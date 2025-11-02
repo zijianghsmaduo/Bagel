@@ -820,6 +820,7 @@ class Bagel(PreTrainedModel):
                 "packed_vae_token_indexes": packed_vae_token_indexes,
                 "packed_text_indexes": packed_text_indexes,
                 "timestep": t,
+                "cfg_type": "normal",
             }
         
         if self.language_model.model.enable_taylorseer:
@@ -841,8 +842,8 @@ class Bagel(PreTrainedModel):
         v_t = self.llm2vae(output.packed_query_sequence)
         v_t = v_t[packed_vae_token_indexes]
 
-        extra_inputs.update(timestep=None)
         if cfg_text_scale > 1.0:
+            extra_inputs.update(cfg_type="cfg_text")
             if self.language_model.model.enable_taylorseer:
                 self.language_model.model.cache_dic = model_pred_text_cache_dic
                 self.language_model.model.current = model_pred_text_current
@@ -862,6 +863,7 @@ class Bagel(PreTrainedModel):
             cfg_text_v_t = cfg_text_v_t[packed_vae_token_indexes]
 
         if cfg_img_scale > 1.0:
+            extra_inputs.update(cfg_type="cfg_img")
             if self.language_model.model.enable_taylorseer:
                 self.language_model.model.cache_dic = model_pred_img_cache_dic
                 self.language_model.model.current = model_pred_img_current
