@@ -58,18 +58,21 @@ if __name__ == "__main__":
 	parser.add_argument("--save_dir", type=str, default="qkv_attn_probs_dump", help="Directory to save the attention probabilities.")
 	parser.add_argument("--is_truncate", action='store_true', help="Whether to truncate the attention probabilities to test the robustness.")
 	parser.add_argument("--attn_backend", type=str, default="naive_sparse_quant", help="Attention backend to use.")
+	parser.add_argument("--sparse_gsize", type=int, default=1, help="Group size for sparse attention.")
+	parser.add_argument("--vae_vit_sparse", action='store_true', help="Whether to apply sparsity to VAE and ViT attention.")
+	parser.add_argument("--self_attn_sparse", action='store_true', help="Whether to apply sparsity to self-attention.")
 	args = parser.parse_args()
 
 	attention_backend = args.attn_backend
 	base_attention = TrickAttention(
 		attention_backend=attention_backend,
-		sparse_gsize=10, sparse_topk=0.2, sparse_threshold=args.threshold if args.threshold is not None else 4e-5,
+		sparse_gsize=args.sparse_gsize, sparse_topk=0.2, sparse_threshold=args.threshold if args.threshold is not None else 4e-5,
 		quant_gsize=32,
 		posterior_truncate_threshold=args.threshold if args.threshold is not None else 4e-5,
 		save_dir=args.save_dir if args.save_dir else "attn_probs_qkv_dump_tmp",
 		is_save=args.is_save, is_plot=False, is_truncate=args.is_truncate,
 		plot_dir="plot/sparse_attention_scores", heads_to_plot=[0, 1, 2],
-		vae_vit=True, self_attn=True
+		vae_vit=args.vae_vit_sparse, self_attn=args.self_attn_sparse
 	)
 
 	model_path = "./models/BAGEL-7B-MoT"  # Download from https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT
@@ -283,13 +286,13 @@ if __name__ == "__main__":
 	# set_new_threshold(0.0)
 	# gen_inference("A female cosplayer portraying an ethereal fairy or elf, wearing a flowing dress made of delicate fabrics in soft, mystical colors like emerald green and silver. She has pointed ears, a gentle, enchanting expression, and her outfit is adorned with sparkling jewels and intricate patterns. The background is a magical forest with glowing plants, mystical creatures, and a serene atmosphere.")
 	# gen_inference_with_thinking("a car made of small cars")
-	
+
 	# image1 = Image.open('test_images/women.jpg')
 	# editing_inference("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
-	image2 = Image.open('test_images/octupusy.jpg')
-	editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
-	# image1 = Image.open('test_images/women.jpg')
-	# editing_inference_with_thinking("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
+	# image2 = Image.open('test_images/octupusy.jpg')
+	# editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
+	image1 = Image.open('test_images/women.jpg')
+	editing_inference_with_thinking("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
 
 	# image3 = Image.open('test_images/meme.jpg')
 	# understanding_inference("Can someone explain what’s funny about this meme??", image3)

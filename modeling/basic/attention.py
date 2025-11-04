@@ -92,6 +92,13 @@ class TrickAttention:
   ):
     vae_range = kv_cache.vae
     return (vae_range[0], vae_range[1]+1) if vae_range is not None else None
+  
+  @staticmethod
+  def get_vit_range(
+    kv_cache: KVCacheStructure,
+  ):
+    vit_range = kv_cache.vit
+    return (vit_range[0], vit_range[1]+1) if vit_range is not None else None
 
   def save(
     self, entry_to_save: dict, mode: str, batch_idx: int,
@@ -456,6 +463,7 @@ class TrickAttention:
       D = packed_query_states.shape[-1]
       vae_vit_range = self.get_vae_vit_range(kv_cache)
       vae_range = self.get_vae_range(kv_cache)
+      vit_range = self.get_vit_range(kv_cache)
       self_range = self.get_self_range(kv_cache)
       min_threshold = self.posterior_truncate_threshold
 
@@ -500,7 +508,10 @@ class TrickAttention:
             # if mode == "gen" and timestep is not None and timestep >= 0 and cfg_type is not None and (cfg_type == "normal" or cfg_type == "cfg_text"):
             if mode == "gen" and timestep is not None and timestep >= 0 and cfg_type is not None and (cfg_type == "normal"):
               vae_vit_range_tensor = torch.tensor(vae_vit_range, device=q_bmm.device, dtype=torch.long)
-              vae_vit_mask, representative_attn_scores = self.block_sparsifier.sparsify_kv_cache_threshold(q_bmm, k_bmm, q_range_tensor, vae_vit_range_tensor)
+              vit_range_tensor = torch.tensor(vit_range, device=q_bmm.device, dtype=torch.long)
+              vae_range_tensor = torch.tensor(vae_range, device=q_bmm.device, dtype=torch.long)
+              vae_vit_mask, representative_attn_scores = self.block_sparsifier.sparsify_kv_cache_threshold(q_bmm, k_bmm, q_range_tensor, vae_vit_range_tensor, vae_range_tensor, vit_range_tensor)
+              # vae_vit_mask, representative_attn_scores = self.block_sparsifier.sparsify_kv_cache_threshold_fine(q_bmm, k_bmm, q_range_tensor, vae_vit_range_tensor, vae_range_tensor, vit_range_tensor)
               vae_vit_mask = vae_vit_mask.to(torch.bool)
               # coverage = compute_coverage(ref_mask[:, q_range_tensor[0]:q_range_tensor[1], vae_vit_range_tensor[0]:vae_vit_range_tensor[1]], vae_vit_mask)
               # plot_mask_heads(ref_mask[:, q_range_tensor[0]:q_range_tensor[1], vae_vit_range_tensor[0]:vae_vit_range_tensor[1]], heads=heads_to_plot, out_dir=f"{self.plot_dir}/ts_{timestep}_layer_{layer_idx}_batch_{b}",
