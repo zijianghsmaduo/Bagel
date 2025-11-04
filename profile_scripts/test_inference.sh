@@ -28,7 +28,8 @@ threshold=4e-4
 
 ## Attention backend options: naive, naive_truncate, naive_sparse, naive_sparse_quant
 # attn_backend="naive"
-attn_backend="naive_sparse_quant"
+# attn_backend="naive_sparse_quant"
+attn_backend="flash"
 
 CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python3 ./profile/test_inference.py $is_save $is_truncate --save_dir $save_dir --threshold $threshold --attn_backend $attn_backend &
 

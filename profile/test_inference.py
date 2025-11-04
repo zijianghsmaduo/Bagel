@@ -61,16 +61,18 @@ if __name__ == "__main__":
 	args = parser.parse_args()
 
 	attention_backend = args.attn_backend
-	base_attention = TrickAttention(
-		attention_backend=attention_backend,
-		sparse_gsize=10, sparse_topk=0.2, sparse_threshold=args.threshold if args.threshold is not None else 4e-5,
-		quant_gsize=32,
-		posterior_truncate_threshold=args.threshold if args.threshold is not None else 4e-5,
-		save_dir=args.save_dir if args.save_dir else "attn_probs_qkv_dump_tmp",
-		is_save=args.is_save, is_plot=False, is_truncate=args.is_truncate,
-		plot_dir="plot/sparse_attention_scores", heads_to_plot=[0, 1, 2],
-		vae_vit=True, self_attn=True
-	)
+	base_attention = None
+	if attention_backend != "flash":
+		base_attention = TrickAttention(
+			attention_backend=attention_backend,
+			sparse_gsize=10, sparse_topk=0.2, sparse_threshold=args.threshold if args.threshold is not None else 4e-5,
+			quant_gsize=32,
+			posterior_truncate_threshold=args.threshold if args.threshold is not None else 4e-5,
+			save_dir=args.save_dir if args.save_dir else "attn_probs_qkv_dump_tmp",
+			is_save=args.is_save, is_plot=False, is_truncate=args.is_truncate,
+			plot_dir="plot/sparse_attention_scores", heads_to_plot=[0, 1, 2],
+			vae_vit=True, self_attn=True
+		)
 
 	model_path = "./models/BAGEL-7B-MoT"  # Download from https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT
 
@@ -296,13 +298,14 @@ if __name__ == "__main__":
 	# image3 = Image.open('test_images/car.png')
 	# understanding_inference("Give a description of this car.", image3)
 
-	if args.is_truncate and args.is_save:
-		sparsity = base_attention.get_sparsity()
-		write_txt = f"Sparsity levels for each timestep and layer:\n{sparsity}" + "\nAverage sparsity per layer:\n" + str(np.mean(sparsity, axis=0))
-		with open(os.path.join(args.save_dir, "sparsity_levels.txt"), "w") as f:
-			f.write(write_txt)
-		print(sparsity)
-	else:
-		sparsity = base_attention.get_sparsity()
-		print(f"Sparsity for VAE + ViT:\n" + str(np.mean(np.mean(sparsity[0], axis=0))))
-		print(f"Sparsity for Self-Attention:\n" + str(np.mean(np.mean(sparsity[1], axis=0))))
+	if base_attention is not None:
+		if args.is_truncate and args.is_save:
+			sparsity = base_attention.get_sparsity()
+			write_txt = f"Sparsity levels for each timestep and layer:\n{sparsity}" + "\nAverage sparsity per layer:\n" + str(np.mean(sparsity, axis=0))
+			with open(os.path.join(args.save_dir, "sparsity_levels.txt"), "w") as f:
+				f.write(write_txt)
+			print(sparsity)
+		else:
+			sparsity = base_attention.get_sparsity()
+			print(f"Sparsity for VAE + ViT:\n" + str(np.mean(np.mean(sparsity[0], axis=0))))
+			print(f"Sparsity for Self-Attention:\n" + str(np.mean(np.mean(sparsity[1], axis=0))))

@@ -31,7 +31,9 @@ class InterleaveInferencer:
     def init_gen_context(self): 
         gen_context = {
             'kv_lens': [0],
-            'ropes': [0],
+            # 'ropes': [0],
+            # Modify
+            'ropes': [1],
             'past_key_values': NaiveCache(self.model.config.llm_config.num_hidden_layers),
         }
         return gen_context
@@ -116,7 +118,9 @@ class InterleaveInferencer:
         # print(cfg_renorm_type)
         past_key_values = gen_context['past_key_values']
         kv_lens = gen_context['kv_lens']
-        ropes = gen_context['ropes']
+        # ropes = gen_context['ropes']
+        # Modify
+        ropes = [0]
         generation_input = self.model.prepare_vae_latent(
             curr_kvlens=kv_lens,
             curr_rope=ropes, 
@@ -127,7 +131,9 @@ class InterleaveInferencer:
         # text cfg
         cfg_text_past_key_values = cfg_text_precontext['past_key_values']
         kv_lens_cfg = cfg_text_precontext['kv_lens']
-        ropes_cfg = cfg_text_precontext['ropes']
+        # ropes_cfg = cfg_text_precontext['ropes']
+        # Modify
+        ropes_cfg = [0]
         generation_input_cfg_text = self.model.prepare_vae_latent_cfg(
             curr_kvlens=kv_lens_cfg,
             curr_rope=ropes_cfg, 
@@ -137,7 +143,9 @@ class InterleaveInferencer:
         # img cfg
         cfg_img_past_key_values = cfg_img_precontext['past_key_values']
         kv_lens_cfg = cfg_img_precontext['kv_lens']
-        ropes_cfg = cfg_img_precontext['ropes']
+        # ropes_cfg = cfg_img_precontext['ropes']
+        # Modify
+        ropes_cfg = [0]
         generation_input_cfg_img = self.model.prepare_vae_latent_cfg(
             curr_kvlens=kv_lens_cfg,
             curr_rope=ropes_cfg, 
