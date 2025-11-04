@@ -15,6 +15,8 @@ import glob
 
 from matplotlib.patches import Rectangle
 
+import torch.functional as F
+
 import argparse
 
 def attention_plot(attention, ax, x_texts=None, y_texts=None, annot=False,
@@ -715,6 +717,50 @@ def compute_cosine_similarity(tensor1, tensor2):
     cosine_similarity = torch.where(denominator == 0, torch.tensor(0.0, device=denominator.device), cosine_similarity)
     return cosine_similarity
 
+def compute_group_head_cosine_similarity(ref_tensor1, targ_tensor2):
+    """
+    Computes cosine similarity with a group-wise max-matching logic.
+    For each head in targ_tensor2, it finds the maximum cosine similarity
+    against all heads within the same group in ref_tensor1.
+    """
+    assert ref_tensor1.shape == targ_tensor2.shape, "Input tensors must have the same shape."
+    H, L, D = ref_tensor1.shape
+    group_size = 7
+    assert H % group_size == 0, "Number of heads H must be divisible by group_size."
+    
+    num_groups = H // group_size
+
+    # 1. Group the tensors
+    # Shape: (num_groups, group_size, L, D)
+    ref_grouped = ref_tensor1.view(num_groups, group_size, L, D)
+    targ_grouped = targ_tensor2.view(num_groups, group_size, L, D)
+
+    # 2. Expand dimensions for broadcasting to compute all-to-all similarities within each group
+    # targ_expanded shape: (num_groups, group_size, 1, L, D)
+    # ref_expanded shape:  (num_groups, 1, group_size, L, D)
+    targ_expanded = targ_grouped.unsqueeze(2)
+    ref_expanded = ref_grouped.unsqueeze(1)
+
+    # 3. Compute the similarity matrix for each group and each token position
+    # The result `similarity_matrices` has shape (num_groups, group_size, group_size, L)
+    # where dim=1 is for target heads and dim=2 is for reference heads.
+    numerator = (targ_expanded * ref_expanded).sum(dim=-1)
+    denominator = torch.norm(targ_expanded, dim=-1) * torch.norm(ref_expanded, dim=-1)
+    similarity_matrices = numerator / denominator
+    
+    # Handle potential NaN from 0-norm vectors
+    similarity_matrices = torch.nan_to_num(similarity_matrices, nan=0.0)
+
+    # 4. For each target head (dim=1), find the max similarity across all reference heads (dim=2)
+    # The result `max_similarities` has shape (num_groups, group_size, L)
+    max_similarities, _ = torch.max(similarity_matrices, dim=2)
+
+    # 5. Reshape the result back to the original head dimension
+    # Shape: (H, L)
+    final_similarity_map = max_similarities.view(H, L)
+    
+    return final_similarity_map
+
 def compute_mse_similarity(tensor1, tensor2):
     assert tensor1.shape == tensor2.shape, "Input tensors must have the same shape."
     H, L, D = tensor1.shape
@@ -722,7 +768,46 @@ def compute_mse_similarity(tensor1, tensor2):
     assert mse.shape == (H, L), f"Unexpected MSE shape: {mse.shape}"
     return mse
 
-def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', heads_to_plot=None, timestep=20):
+def compute_group_head_mse_similarity(ref_tensor1, targ_tensor2):
+    """
+    Computes MSE similarity with a group-wise min-matching logic.
+    For each head in targ_tensor2, it finds the minimum MSE
+    against all heads within the same group in ref_tensor1.
+    """
+    assert ref_tensor1.shape == targ_tensor2.shape, "Input tensors must have the same shape."
+    H, L, D = ref_tensor1.shape
+    group_size = 7
+    assert H % group_size == 0, "Number of heads H must be divisible by group_size."
+    
+    num_groups = H // group_size
+
+    # 1. Group the tensors
+    # Shape: (num_groups, group_size, L, D)
+    ref_grouped = ref_tensor1.view(num_groups, group_size, L, D)
+    targ_grouped = targ_tensor2.view(num_groups, group_size, L, D)
+
+    # 2. Expand dimensions for broadcasting to compute all-to-all MSE within each group
+    # targ_expanded shape: (num_groups, group_size, 1, L, D)
+    # ref_expanded shape:  (num_groups, 1, group_size, L, D)
+    targ_expanded = targ_grouped.unsqueeze(2)
+    ref_expanded = ref_grouped.unsqueeze(1)
+
+    # 3. Compute the MSE matrix for each group and each token position
+    # The result `mse_matrices` has shape (num_groups, group_size, group_size, L)
+    # where dim=1 is for target heads and dim=2 is for reference heads.
+    mse_matrices = torch.mean((targ_expanded - ref_expanded) ** 2, dim=-1)
+
+    # 4. For each target head (dim=1), find the min MSE across all reference heads (dim=2)
+    # The result `min_mses` has shape (num_groups, group_size, L)
+    min_mses, _ = torch.min(mse_matrices, dim=2)
+
+    # 5. Reshape the result back to the original head dimension
+    # Shape: (H, L)
+    final_mse_map = min_mses.view(H, L)
+    
+    return final_mse_map
+
+def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', heads_to_plot=None, timestep=20, mode='mse'):
   if heads_to_plot is None:
     heads_to_plot = list(range(-1, 28))
 
@@ -731,6 +816,9 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
   layer_idxes = range(0, 28)
   if elem not in ['q']:
     raise ValueError(f"Invalid elem: {elem}. Must be 'q'.")
+  
+  mse_threshold = 0.05
+  cosine_threshold = 0.85
 
   # --- 提前创建好 norm 对象和 cmap ---
   from matplotlib.colors import Normalize, PowerNorm, LogNorm
@@ -771,22 +859,43 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
       fig.suptitle(f'Attention Heads for Layer {layer_idx}, Timestep {timestep}', fontsize=24)
       axes_flat = axes.flatten()
 
-      # similarity_cfg_text = compute_cosine_similarity(normal_q, cfg_text_q)
-      # similarity_cfg_image = compute_cosine_similarity(normal_q, cfg_image_q)
-      similarity_cfg_text = compute_mse_similarity(normal_q, cfg_text_q)
-      similarity_cfg_image = compute_mse_similarity(normal_q, cfg_image_q)
 
+      similarity_cfg_image = torch.zeros_like(normal_q[:,:,0])
+      similarity_cfg_text = torch.zeros_like(normal_q[:,:,0])
+      if mode == 'cosine':
+        similarity_cfg_text = compute_cosine_similarity(normal_q, cfg_text_q)
+        similarity_cfg_image = compute_cosine_similarity(normal_q, cfg_image_q)
+      elif mode == 'group_cosine':
+        similarity_cfg_text = compute_group_head_cosine_similarity(normal_q, cfg_text_q)
+        similarity_cfg_image = compute_group_head_cosine_similarity(normal_q, cfg_image_q)
+      elif mode == 'mse':
+        similarity_cfg_text = compute_mse_similarity(normal_q, cfg_text_q)
+        similarity_cfg_image = compute_mse_similarity(normal_q, cfg_image_q)
+      elif mode == 'group_mse':
+        similarity_cfg_text = compute_group_head_mse_similarity(normal_q, cfg_text_q)
+        similarity_cfg_image = compute_group_head_mse_similarity(normal_q, cfg_image_q)
+      else:
+        raise ValueError(f"Invalid mode: {mode}. Must be 'cosine' or 'mse'.")
+      
+      print(f"similarity_cfg_text shape: {similarity_cfg_text}")
+
+      percentage_of_high_similarity_text = torch.mean((similarity_cfg_text <= mse_threshold if 'mse' in mode else similarity_cfg_text >= cosine_threshold).float()).item()
+      percentage_of_high_similarity_image = torch.mean((similarity_cfg_image <= mse_threshold if 'mse' in mode else similarity_cfg_image >= cosine_threshold).float()).item()
       data_aspect_ratio = similarity_cfg_text.shape[1] / similarity_cfg_text.shape[0]
 
-      kv_plot(similarity_cfg_text, ax=axes_flat[0], title="MSE Similarity with CFG Text",
+      vmin = torch.min(torch.min(similarity_cfg_text), torch.min(similarity_cfg_image)).item()
+      vmax = torch.max(torch.max(similarity_cfg_text), torch.max(similarity_cfg_image)).item()
+      norm_to_use = Normalize(vmin=vmin, vmax=vmax)
+      print(f"vmin: {vmin}, vmax: {vmax}")
+      kv_plot(similarity_cfg_text, ax=axes_flat[0], title=f"MSE Similarity with CFG Text\n{percentage_of_high_similarity_text:.2%} below {mse_threshold}" if 'mse' in mode else f"{percentage_of_high_similarity_text:.2%} above {cosine_threshold}",
                          vmin=vmin, vmax=vmax, 
                          norm=norm_to_use,      # 传入统一的 norm 对象
                          cmap=cmap_to_use, 
                          xlabel="Query", ylabel="Head",
                          tick_density=100, square=False,
                          aspect_ratio=data_aspect_ratio)
-      
-      kv_plot(similarity_cfg_image, ax=axes_flat[1], title="MSE Similarity with CFG Image",
+
+      kv_plot(similarity_cfg_image, ax=axes_flat[1], title=f"MSE Similarity with CFG Image\n{percentage_of_high_similarity_image:.2%} below {mse_threshold}" if 'mse' in mode else f"{percentage_of_high_similarity_image:.2%} above {cosine_threshold}",
                          vmin=vmin, vmax=vmax, 
                          norm=norm_to_use,      # 传入统一的 norm 对象
                          cmap=cmap_to_use, 
@@ -853,6 +962,8 @@ if __name__ == "__main__":
   parser.add_argument('--layer_bias', type=int, default=28,
                       help="Number of layers to process")
   parser.add_argument('--heads', type=str, default='[-2]')
+  parser.add_argument('--cfg_mode', type=str, choices=['mse', 'group_mse', 'cosine', 'group_cosine'], default='mse',
+                      help="Mode for CFG similarity: 'mse', 'group_mse', 'cosine' or 'group_cosine'")
   args = parser.parse_args()
 
   heads = json.loads(args.heads)
@@ -878,4 +989,4 @@ if __name__ == "__main__":
                           layer_idxes=layer_idxes, name=args.name, special_tokens=True, heads_to_plot=heads)
   elif args.mode == 'cfg_similarity':
       layer_idxes = list(range(args.layer_base, args.layer_base + args.layer_bias))
-      cfg_similarity_heatmap(load_dir=args.load_dir, name=args.name, heads_to_plot=heads, timestep=args.timestep)
+      cfg_similarity_heatmap(load_dir=args.load_dir, name=args.name, heads_to_plot=heads, timestep=args.timestep, mode=args.cfg_mode)

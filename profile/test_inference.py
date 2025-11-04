@@ -68,7 +68,8 @@ if __name__ == "__main__":
 		posterior_truncate_threshold=args.threshold if args.threshold is not None else 4e-5,
 		save_dir=args.save_dir if args.save_dir else "attn_probs_qkv_dump_tmp",
 		is_save=args.is_save, is_plot=False, is_truncate=args.is_truncate,
-		plot_dir="plot/sparse_attention_scores", heads_to_plot=[0, 1, 2]
+		plot_dir="plot/sparse_attention_scores", heads_to_plot=[0, 1, 2],
+		vae_vit=True, self_attn=True
 	)
 
 	model_path = "./models/BAGEL-7B-MoT"  # Download from https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT
@@ -304,4 +305,4 @@ if __name__ == "__main__":
 	else:
 		sparsity = base_attention.get_sparsity()
 		print(f"Sparsity for VAE + ViT:\n" + str(np.mean(np.mean(sparsity[0], axis=0))))
-		print(f"Sparsity for LLM:\n" + str(np.mean(np.mean(sparsity[1], axis=0))))
+		print(f"Sparsity for Self-Attention:\n" + str(np.mean(np.mean(sparsity[1], axis=0))))

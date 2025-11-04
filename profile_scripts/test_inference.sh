@@ -20,10 +20,10 @@ trap cleanup SIGINT SIGTERM
 export PYTHONPATH=.
 export CUDA_VISIBLE_DEVICES=6
 
-is_save=--is_save
+# is_save=--is_save
 # is_truncate=--is_truncate
 save_dir="q_cfg_dump_octupusy_naive_sparse_quant_threshold_4e-5"
-threshold=4e-5
+threshold=4e-4
 # threshold=1
 
 ## Attention backend options: naive, naive_truncate, naive_sparse, naive_sparse_quant
