@@ -58,6 +58,9 @@ if __name__ == "__main__":
 	parser.add_argument("--save_dir", type=str, default="qkv_attn_probs_dump", help="Directory to save the attention probabilities.")
 	parser.add_argument("--is_truncate", action='store_true', help="Whether to truncate the attention probabilities to test the robustness.")
 	parser.add_argument("--attn_backend", type=str, default="naive_sparse_quant", help="Attention backend to use.")
+	parser.add_argument("--sparse_gsize", type=int, default=1, help="Group size for sparse attention.")
+	parser.add_argument("--vae_vit_sparse", action='store_true', help="Whether to apply sparsity to VAE and ViT attention.")
+	parser.add_argument("--self_attn_sparse", action='store_true', help="Whether to apply sparsity to self-attention.")
 	args = parser.parse_args()
 
 	attention_backend = args.attn_backend
@@ -285,13 +288,13 @@ if __name__ == "__main__":
 	# set_new_threshold(0.0)
 	# gen_inference("A female cosplayer portraying an ethereal fairy or elf, wearing a flowing dress made of delicate fabrics in soft, mystical colors like emerald green and silver. She has pointed ears, a gentle, enchanting expression, and her outfit is adorned with sparkling jewels and intricate patterns. The background is a magical forest with glowing plants, mystical creatures, and a serene atmosphere.")
 	# gen_inference_with_thinking("a car made of small cars")
-	
+
 	# image1 = Image.open('test_images/women.jpg')
 	# editing_inference("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
-	image2 = Image.open('test_images/octupusy.jpg')
-	editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
-	# image1 = Image.open('test_images/women.jpg')
-	# editing_inference_with_thinking("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
+	# image2 = Image.open('test_images/octupusy.jpg')
+	# editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
+	image1 = Image.open('test_images/women.jpg')
+	editing_inference_with_thinking("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
 
 	# image3 = Image.open('test_images/meme.jpg')
 	# understanding_inference("Can someone explain what’s funny about this meme??", image3)
