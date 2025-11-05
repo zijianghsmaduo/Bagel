@@ -21,6 +21,9 @@ class VIEScore:
         elif self.backbone_name == "qwen25vl":
             from mllm_tools.qwen25vl_eval import Qwen25VL
             self.model = Qwen25VL()
+        elif self.backbone_name == "gemini":
+            from mllm_tools.gemini import Gemini
+            self.model = Gemini(key_path, are_images_encoded=False, model_name="gemini-2.5-flash")
         else:
             raise NotImplementedError("backbone not supported")
         self.context = vie_prompts._context_no_delimit
@@ -40,6 +43,9 @@ class VIEScore:
         if self.backbone_name in ['gpt4o', 'gpt4v']:
             self.model.use_encode = False if isinstance(image_prompts[0], str) else True
             #print("Using encode:", self.model.use_encode)
+        elif self.backbone_name == 'gemini':
+            # Gemini API accepts PIL Image objects directly, no encoding needed
+            self.model.use_encode = False
         if self.task == "t2i":
             _SC_prompt = self.SC_prompt.replace("<prompt>", text_prompt)
         elif self.task == "tie":

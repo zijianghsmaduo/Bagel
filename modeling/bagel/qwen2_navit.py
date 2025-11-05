@@ -524,6 +524,7 @@ class PackedAttentionMoT(Qwen2Attention):
 				timestep: Optional[int] = None,
 				layer_idx: Optional[int] = None,
 				cfg_type: Optional[str] = None,
+				kv_cache_struct: Optional[KVCacheStructure] = None,
 		):
 				if mode == 'und':
 						packed_query_states = self.q_proj(packed_query_sequence).view(-1, self.num_heads, self.head_dim)
@@ -590,7 +591,7 @@ class PackedAttentionMoT(Qwen2Attention):
 				cu_seqlens_q = torch.nn.functional.pad(torch.cumsum(query_lens, dim=0), (1, 0))
 				cu_seqlens_k = torch.nn.functional.pad(torch.cumsum(key_values_lens, dim=0), (1, 0))
 
-				kv_cache = KVCacheStructure()
+				# kv_cache = KVCacheStructure()
 				packed_attn_output = torch.zeros_like(packed_query_states, dtype=packed_query_states.dtype, device=packed_query_states.device)
 				if self.trick_attn is None:
 					packed_attn_output = flash_attn_varlen_func(
@@ -605,9 +606,9 @@ class PackedAttentionMoT(Qwen2Attention):
 					)
 				else:
 					# print("here using trick attention")
-					kv_cache_dict = OctopusKVCache
-					# kv_cache_dict = WomanKVCache
-					kv_cache.read_from_dict(kv_cache_dict)
+					# kv_cache_dict = OctopusKVCache
+					# # kv_cache_dict = WomanKVCache
+					# kv_cache.read_from_dict(kv_cache_dict)
 
 					packed_attn_output = self.trick_attn.forward(
 						packed_query_states=packed_query_states,
@@ -621,7 +622,7 @@ class PackedAttentionMoT(Qwen2Attention):
 						mode=mode,
 						timestep=timestep,
 						layer_idx=layer_idx,
-						kv_cache=kv_cache,
+						kv_cache=kv_cache_struct,
 						cfg_type=cfg_type,
 					)
 
@@ -814,6 +815,7 @@ class Qwen2MoTDecoderLayer(nn.Module):
 				timestep: Optional[int] = None,
 				layer_idx: Optional[int] = None,
 				cfg_type: Optional[str] = None,
+				kv_cache_struct: Optional[KVCacheStructure] = None,
 		) -> BaseNavitOutputWithPast:
 				
 				enable_taylorseer = getattr(self, 'enable_taylorseer', False)
@@ -850,6 +852,7 @@ class Qwen2MoTDecoderLayer(nn.Module):
 								timestep=timestep,
 								layer_idx=layer_idx,
 								cfg_type=cfg_type,
+								kv_cache_struct=kv_cache_struct,
 						)
 						packed_query_sequence = residual + packed_query_sequence
 
@@ -1081,6 +1084,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
 				packed_text_indexes=None,
 				timestep: Optional[int] = None,
 				cfg_type: Optional[str] = None,
+				kv_cache_struct: Optional[KVCacheStructure] = None,
 		) -> BaseNavitOutputWithPast:
 				
 				enable_taylorseer = getattr(self, 'enable_taylorseer', False)
@@ -1108,6 +1112,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
 				extra_inputs.update(
 						timestep=timestep,
 						cfg_type=cfg_type,
+						kv_cache_struct=kv_cache_struct,
 				)
 				for layer_idx, decoder_layer in enumerate(self.layers):
 						if enable_taylorseer:
@@ -1229,6 +1234,7 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
 				#
 				timestep: Optional[int] = None,
 				cfg_type: Optional[str] = None,
+				kv_cache_struct: Optional[KVCacheStructure] = None,
 		) -> BaseNavitOutputWithPast:
 
 				outputs = self.model(
@@ -1246,7 +1252,8 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
 						packed_text_indexes=packed_text_indexes,
 						#
 						timestep=timestep,
-						cfg_type=cfg_type
+						cfg_type=cfg_type,
+						kv_cache_struct=kv_cache_struct,
 				)
 
 				return outputs

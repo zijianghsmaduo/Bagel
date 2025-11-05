@@ -23,6 +23,8 @@ from modeling.cache_utils.taylorseer import cache_init
 
 from tqdm import tqdm
 
+from modeling.basic import KVCacheStructure
+
 
 class BagelConfig(PretrainedConfig):
     def __init__(
@@ -680,6 +682,7 @@ class Bagel(PreTrainedModel):
         cfg_type: str = "parallel",
         # cache_args
         enable_taylorseer=False,
+				kv_cache_struct: Optional[KVCacheStructure] = None,
     ):
         if enable_taylorseer:
             self.language_model.model.enable_taylorseer = True
@@ -747,6 +750,7 @@ class Bagel(PreTrainedModel):
                 model_pred_img_current=model_pred_img_current,
                 #
                 t=i,
+                kv_cache_struct=kv_cache_struct,
             )
 
             x_t = x_t - v_t.to(x_t.device) * dts[i] # velocity pointing from data to noise
@@ -800,6 +804,7 @@ class Bagel(PreTrainedModel):
         model_pred_img_current: Optional[int] = None,
         #
         t: Optional[int] = None,
+        kv_cache_struct: Optional[KVCacheStructure] = None,
     ):
         packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)
         packed_sequence = packed_text_embedding.new_zeros((sum(packed_seqlens), self.hidden_size))
@@ -821,6 +826,7 @@ class Bagel(PreTrainedModel):
                 "packed_text_indexes": packed_text_indexes,
                 "timestep": t,
                 "cfg_type": "normal",
+                "kv_cache_struct": kv_cache_struct,
             }
         
         if self.language_model.model.enable_taylorseer:
