@@ -31,9 +31,7 @@ class InterleaveInferencer:
     def init_gen_context(self): 
         gen_context = {
             'kv_lens': [0],
-            # 'ropes': [0],
-            # Modify
-            'ropes': [1],
+            'ropes': [0],
             'past_key_values': NaiveCache(self.model.config.llm_config.num_hidden_layers),
         }
         return gen_context
@@ -118,9 +116,10 @@ class InterleaveInferencer:
         # print(cfg_renorm_type)
         past_key_values = gen_context['past_key_values']
         kv_lens = gen_context['kv_lens']
-        # ropes = gen_context['ropes']
+        ropes = gen_context['ropes']
+        print(f"ropes: {ropes}")
         # Modify
-        ropes = [0]
+        # ropes = [0]
         generation_input = self.model.prepare_vae_latent(
             curr_kvlens=kv_lens,
             curr_rope=ropes, 
@@ -131,9 +130,10 @@ class InterleaveInferencer:
         # text cfg
         cfg_text_past_key_values = cfg_text_precontext['past_key_values']
         kv_lens_cfg = cfg_text_precontext['kv_lens']
-        # ropes_cfg = cfg_text_precontext['ropes']
+        ropes_cfg = cfg_text_precontext['ropes']
+        print(f"cfg_text_ropes: {ropes_cfg}")
         # Modify
-        ropes_cfg = [0]
+        # ropes_cfg = [0]
         generation_input_cfg_text = self.model.prepare_vae_latent_cfg(
             curr_kvlens=kv_lens_cfg,
             curr_rope=ropes_cfg, 
@@ -143,9 +143,10 @@ class InterleaveInferencer:
         # img cfg
         cfg_img_past_key_values = cfg_img_precontext['past_key_values']
         kv_lens_cfg = cfg_img_precontext['kv_lens']
-        # ropes_cfg = cfg_img_precontext['ropes']
+        ropes_cfg = cfg_img_precontext['ropes']
+        print(f"cfg_img_ropes: {ropes_cfg}")
         # Modify
-        ropes_cfg = [0]
+        # ropes_cfg = [0]
         generation_input_cfg_img = self.model.prepare_vae_latent_cfg(
             curr_kvlens=kv_lens_cfg,
             curr_rope=ropes_cfg, 
@@ -211,7 +212,60 @@ class InterleaveInferencer:
         output = self.tokenizer.decode(unpacked_latent[:,0])
         output = output.split('<|im_end|>')[0].split('<|im_start|>')[1]
         return output
-        
+    
+    def gen_image_context(
+        self,
+        input_lists: List[Union[str, Image.Image]],
+        gen_text,
+        normal_start,
+        cfg_text_start,
+        cfg_img_start,
+        think
+    ):
+        gen_context = self.init_gen_context()
+        cfg_text_context = deepcopy(gen_context)
+        cfg_img_context = deepcopy(gen_context)
+
+        gen_context['ropes'] = [normal_start]
+        cfg_text_context['ropes'] = [cfg_text_start]
+        cfg_img_context['ropes'] = [cfg_img_start]
+
+        with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
+            if think:
+                # if understanding_output:
+                #     system_prompt = VLM_THINK_SYSTEM_PROMPT 
+                # else:
+                system_prompt = GEN_THINK_SYSTEM_PROMPT
+                gen_context = self.update_context_text(system_prompt, gen_context)
+                cfg_img_context = self.update_context_text(system_prompt, cfg_img_context)
+                cfg_text_context = self.update_context_text(system_prompt, cfg_text_context)
+                print(f"After adding system prompt, kv_lens: {gen_context['kv_lens']}")
+
+            for input_term in input_lists:
+                if isinstance(input_term, str):
+                    # cfg_text_context = deepcopy(gen_context)
+                    gen_context = self.update_context_text(input_term, gen_context)
+                    print(f"After adding input text, kv_lens: {gen_context['kv_lens']}")
+                    cfg_img_context = self.update_context_text(input_term, cfg_img_context)
+
+                elif isinstance(input_term, Image.Image):
+                    input_term = self.vae_transform.resize_transform(pil_img2rgb(input_term))
+                    print("VAE input image size:", input_term.size)
+                    gen_context = self.update_context_image(input_term, gen_context, vae=True)
+                    print(f"After adding input image, kv_lens: {gen_context['kv_lens']}")
+                    cfg_text_context = self.update_context_image(input_term, cfg_text_context, vae=True)
+                    # cfg_text_context = deepcopy(gen_context)
+
+                else:
+                    raise ValueError(f"Unsupported input type: {type(input_term)}")
+
+            if think:
+                gen_context = self.update_context_text(gen_text, gen_context)
+
+        return gen_context, cfg_text_context, cfg_img_context
+
+
+            
     @torch.no_grad()
     def interleave_inference(
         self,
@@ -238,6 +292,13 @@ class InterleaveInferencer:
         cfg_text_context = deepcopy(gen_context)
         cfg_img_context = deepcopy(gen_context)
 
+        # gen_context['ropes'] = [-281]
+        # cfg_text_context['ropes'] = [-50]
+        # cfg_img_context['ropes'] = [-48]
+        # gen_context['ropes'] = [1]
+        # cfg_text_context['ropes'] = [1]
+        # cfg_img_context['ropes'] = [1]
+
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             if think:
                 if understanding_output:
@@ -261,6 +322,7 @@ class InterleaveInferencer:
                     gen_context = self.update_context_image(input_term, gen_context, vae=not understanding_output)
                     print(f"After adding input image, kv_lens: {gen_context['kv_lens']}")
                     image_shapes = input_term.size[::-1]
+                    # cfg_text_context = self.update_context_image(input_term, cfg_text_context, vae=not understanding_output)
                     cfg_text_context = deepcopy(gen_context)
 
                 else:
@@ -271,6 +333,7 @@ class InterleaveInferencer:
                 output_list.append(gen_text)
 
             else:
+                gen_text = ""
                 if think:
                     gen_text = self.gen_text(gen_context, do_sample=do_sample, temperature=text_temperature, max_length=max_think_token_n)
                     # ?? 为什么不在 gen_text 执行之后直接返回新的 context = { kvcache, RoPE, kv_lens } 或者在 gen_text 里直接更新 gen_context
@@ -278,12 +341,47 @@ class InterleaveInferencer:
                     gen_context = self.update_context_text(gen_text, gen_context)
                     print(f"After adding generated text, kv_lens: {gen_context['kv_lens']}")
                     output_list.append(gen_text)
+                
+                # img = self.gen_image(
+                #     image_shapes, 
+                #     gen_context, 
+                #     cfg_text_precontext=cfg_text_context, 
+                #     cfg_img_precontext=cfg_img_context,
+
+                #     cfg_text_scale=cfg_text_scale, 
+                #     cfg_img_scale=cfg_img_scale, 
+                #     cfg_interval=cfg_interval, 
+                #     timestep_shift=timestep_shift, 
+                #     num_timesteps=num_timesteps,
+                #     cfg_renorm_min=cfg_renorm_min,
+                #     cfg_renorm_type=cfg_renorm_type,
+                #     enable_taylorseer=enable_taylorseer,
+                # )
+                bias = gen_context['ropes'][0] 
+                normal_start = -gen_context['ropes'][0] + bias
+                cfg_text_start = -cfg_text_context['ropes'][0] + bias
+                cfg_img_start = -cfg_img_context['ropes'][0] + bias
+                
+                print(f"normal_start: {normal_start}, cfg_text_start: {cfg_text_start}, cfg_img_start: {cfg_img_start}")
+
+                gen_context_tr, cfg_text_context_tr, cfg_img_context_tr = self.gen_image_context(
+                    input_lists,
+                    gen_text,
+                    normal_start,
+                    cfg_text_start,
+                    cfg_img_start,
+                    think
+                )
+
+                # gen_context_tr["past_key_values"].value_cache = gen_context["past_key_values"].value_cache
+                # cfg_text_context_tr["past_key_values"].value_cache = cfg_text_context["past_key_values"].value_cache
+                # cfg_img_context_tr["past_key_values"].value_cache = cfg_img_context["past_key_values"].value_cache
 
                 img = self.gen_image(
                     image_shapes, 
-                    gen_context, 
-                    cfg_text_precontext=cfg_text_context, 
-                    cfg_img_precontext=cfg_img_context,
+                    gen_context_tr, 
+                    cfg_text_precontext=cfg_text_context_tr, 
+                    cfg_img_precontext=cfg_img_context_tr,
 
                     cfg_text_scale=cfg_text_scale, 
                     cfg_img_scale=cfg_img_scale, 

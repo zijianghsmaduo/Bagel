@@ -28,7 +28,8 @@ threshold=4e-5
 
 ## Attention backend options: naive, naive_truncate, naive_sparse, naive_sparse_quant
 # attn_backend="naive"
-attn_backend="naive_sparse_quant"
+# attn_backend="naive_sparse_quant"
+attn_backend="flash"
 sparse_gsize=10
 vae_vit_sparse=--vae_vit_sparse
 self_attn_sparse=--self_attn_sparse
