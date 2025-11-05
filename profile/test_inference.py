@@ -119,9 +119,6 @@ if __name__ == "__main__":
 	# Image Transform Preparing
 	vae_transform = ImageTransform(1024, 512, 16)
 	vit_transform = ImageTransform(980, 224, 14)
-	# vae_transform = data.transforms.ImageTransform(1024, 512, 16)
-	# vit_transform = data.transforms.ImageTransform(980, 224, 14)
-	# vit_transform = ImageTransform(1024, 224, 14)
 
 	max_mem_per_gpu = "80GiB"  # Modify it according to your GPU setting. On an A100, 80 GiB is sufficient to load on a single GPU.
 

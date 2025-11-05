@@ -127,7 +127,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--save_path", type=str, required=True)
-    parser.add_argument("--backbone", type=str, default="gpt4o", choices=["gpt4o", "qwen25vl"])
+    parser.add_argument("--backbone", type=str, default="gpt4o", choices=["gpt4o", "qwen25vl", "gemini"])
     parser.add_argument("--language", type=str, default="en", choices=["en", "cn"])
     args = parser.parse_args()
     save_path_dir = args.save_path

@@ -1,53 +1,85 @@
 import base64
 import requests
-from io import BytesIO
+from io import BytesIO, StringIO
 from typing import Union, Optional, Tuple, List
 from PIL import Image, ImageOps
 import os
-import google.generativeai as genai
-import time
+import json
+from google import genai
+from google.genai import types
 
-# --- 辅助函数 (大部分保持不变) ---
 
 def get_api_key(file_path):
-    """从文件的第一行读取 API 密钥。"""
+    # Read the API key from the first line of the file
     with open(file_path, 'r') as file:
         return file.readline().strip()
 
 def pick_next_item(current_item, item_list):
-    """从列表中循环选择下一个项目。"""
     if current_item not in item_list:
         raise ValueError("Current item is not in the list")
     current_index = item_list.index(current_item)
     next_index = (current_index + 1) % len(item_list)
+
     return item_list[next_index]
 
+# Function to encode a PIL image
+def encode_pil_image(pil_image):
+    # Create an in-memory binary stream
+    image_stream = BytesIO()
+    
+    # Save the PIL image to the binary stream in JPEG format (you can change the format if needed)
+    pil_image.save(image_stream, format='JPEG')
+    
+    # Get the binary data from the stream and encode it as base64
+    image_data = image_stream.getvalue()
+    base64_image = base64.b64encode(image_data).decode('utf-8')
+    
+    return base64_image
+
+
 def load_image(image: Union[str, Image.Image], format: str = "RGB", size: Optional[Tuple] = None) -> Image.Image:
-    """从路径、URL或PIL对象加载图像。"""
+    """
+    Load an image from a given path or URL and convert it to a PIL Image.
+
+    Args:
+        image (Union[str, Image.Image]): The image path, URL, or a PIL Image object to be loaded.
+        format (str, optional): Desired color format of the resulting image. Defaults to "RGB".
+        size (Optional[Tuple], optional): Desired size for resizing the image. Defaults to None.
+
+    Returns:
+        Image.Image: A PIL Image in the specified format and size.
+
+    Raises:
+        ValueError: If the provided image format is not recognized.
+    """
     if isinstance(image, str):
         if image.startswith("http://") or image.startswith("https://"):
             image = Image.open(requests.get(image, stream=True).raw)
         elif os.path.isfile(image):
             image = Image.open(image)
         else:
-            raise ValueError(f"Incorrect path or url: {image}")
-    elif not isinstance(image, Image.Image):
-        raise ValueError("Incorrect format for image. Should be a url, a local path, or a PIL image.")
-    
+            raise ValueError(
+                f"Incorrect path or url, URLs must start with `http://` or `https://`, and {image} is not a valid path"
+            )
+    elif isinstance(image, Image.Image):
+        image = image
+    else:
+        raise ValueError(
+            "Incorrect format used for image. Should be an url linking to an image, a local path, or a PIL image."
+        )
     image = ImageOps.exif_transpose(image)
     image = image.convert(format)
-    if size is not None:
+    if (size != None):
         image = image.resize(size, Image.LANCZOS)
     return image
 
-# --- Gemini 模型封装类 ---
-
-class GeminiProVision:
-    def __init__(self, api_key_path='keys/gemini.env', model_name="gemini-1.5-pro-latest"):
-        """Google Gemini Pro Vision 模型封装
+class Gemini():
+    def __init__(self, api_key_path='keys/secret.env', are_images_encoded=False, model_name="gemini-2.5-flash"):
+        """Google Gemini model wrapper via Google AI Studio
         Args:
-            api_key_path (str or list): API密钥文件路径或路径列表。
-            model_name (str): 要使用的 Gemini 模型名称。
+            api_key_path (str): Path to the API key file or API key string. Defaults to 'keys/secret.env'.
+            are_images_encoded (bool): Whether the images are encoded in base64. Defaults to False.
+            model_name (str): Gemini model name. Defaults to "gemini-2.5-flash".
         """
         self.multiple_api_keys = False
         self.current_key_file = None
@@ -59,116 +91,152 @@ class GeminiProVision:
             self.api_key = get_api_key(self.current_key_file)
             self.multiple_api_keys = True
         else:
-            # 兼容直接传入 key 字符串或单个文件路径
-            if os.path.exists(api_key_path):
+            # Check if it's a file path or direct API key
+            if os.path.isfile(api_key_path):
                 self.api_key = get_api_key(api_key_path)
+                self.current_key_file = api_key_path
             else:
+                # Assume it's a direct API key string
                 self.api_key = api_key_path
         
         if not self.api_key:
-            raise ValueError("Gemini API key not found or provided.")
+            print("API key not found.")
+            exit(1)
 
         self.model_name = model_name
-        self.update_client()
+        self.use_encode = are_images_encoded
 
-    def update_client(self):
-        """使用当前的 API 密钥配置 genai 客户端并创建模型实例。"""
-        print(f"Configuring Gemini with a new key...")
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel(self.model_name)
+        # Initialize the Gemini API client using the new API
+        self.client = genai.Client(api_key=self.api_key)
 
-    def prepare_prompt(self, image_links: List = [], text_prompt: str = "") -> list:
-        """为 Gemini API 准备 prompt 列表。
-        
-        Gemini可以直接接受PIL Image对象，无需base64编码。
-        """
-        prompt_content = []
-        # 文本部分必须在前面
-        if text_prompt:
-            prompt_content.append(text_prompt)
-
+    def prepare_prompt(self, image_links: List = [], text_prompt: str = ""):
+        """Prepare prompt content for Gemini API in the new format"""
         if not isinstance(image_links, list):
             image_links = [image_links]
         
+        # Build contents list for the new API format
+        # According to documentation, contents should be a list of parts
+        contents = []
+        
+        # Add images first
         for image_link in image_links:
-            image = load_image(image_link)
-            prompt_content.append(image)
-            
-        return prompt_content
-
-    def get_parsed_output(self, prompt: list, max_retries=2):
-        """发送请求到 Gemini API 并处理响应，包含重试和密钥切换逻辑。"""
-        current_retry = 0
-        while current_retry <= max_retries:
-            try:
-                response = self.model.generate_content(prompt)
-                # 成功获取响应后直接返回文本
-                return response.text
-            except genai.types.generation_types.BlockedPromptException as e:
-                print(f"Prompt was blocked by safety settings: {e}")
-                return "Error: The prompt was blocked due to safety concerns."
-            except Exception as e:
-                # 捕获所有 google.api_core.exceptions 里的错误，例如 ResourceExhausted
-                error_str = str(e).lower()
-                if 'resource has been exhausted' in error_str or 'rate limit' in error_str:
-                    print(f"Rate limit or quota exceeded. Error: {e}")
-                    if self.multiple_api_keys and current_retry < max_retries:
-                        print("Attempting to switch API key...")
-                        self.switch_to_next_key()
-                        current_retry += 1
-                        print("Retrying with new key...")
-                        time.sleep(2) # 等待2秒再重试
+            # If it's already a PIL Image, use it directly
+            if isinstance(image_link, Image.Image):
+                image = image_link
+                # Determine format from PIL Image
+                if image.format:
+                    format_lower = image.format.lower()
+                    if format_lower == 'png':
+                        mime_type = 'image/png'
+                        save_format = 'PNG'
+                    elif format_lower in ['jpeg', 'jpg']:
+                        mime_type = 'image/jpeg'
+                        save_format = 'JPEG'
+                    elif format_lower == 'webp':
+                        mime_type = 'image/webp'
+                        save_format = 'WEBP'
                     else:
-                        print("No more keys to try or max retries reached.")
-                        return f"Error: Rate limit or quota exceeded. No more retries. Last error: {e}"
+                        mime_type = 'image/jpeg'
+                        save_format = 'JPEG'
                 else:
-                    # 其他类型的API错误
-                    print(f"An unexpected API error occurred: {e}")
-                    return f"Error: An unexpected API error occurred: {e}"
-        return "Error: Failed to get a response after multiple retries."
+                    mime_type = 'image/jpeg'
+                    save_format = 'JPEG'
+            else:
+                # Otherwise, load it using the load_image function
+                image = load_image(image_link)
+                # Try to determine format from file extension
+                if isinstance(image_link, str) and os.path.isfile(image_link):
+                    ext = os.path.splitext(image_link)[1].lower()
+                    if ext == '.png':
+                        mime_type = 'image/png'
+                        save_format = 'PNG'
+                    elif ext in ['.jpg', '.jpeg']:
+                        mime_type = 'image/jpeg'
+                        save_format = 'JPEG'
+                    elif ext == '.webp':
+                        mime_type = 'image/webp'
+                        save_format = 'WEBP'
+                    else:
+                        mime_type = 'image/jpeg'
+                        save_format = 'JPEG'
+                else:
+                    mime_type = 'image/jpeg'
+                    save_format = 'JPEG'
+            
+            # Convert PIL Image to bytes for the new API
+            image_stream = BytesIO()
+            image.save(image_stream, format=save_format)
+            image_bytes = image_stream.getvalue()
+            
+            # Use types.Part.from_bytes() as per documentation
+            contents.append(types.Part.from_bytes(
+                data=image_bytes,
+                mime_type=mime_type
+            ))
+        
+        # Add text prompt after images (as recommended in documentation)
+        if text_prompt:
+            contents.append(text_prompt)
+        
+        # Return contents as a list (not types.Content object)
+        return contents
 
-    def switch_to_next_key(self):
-        """切换到下一个 API 密钥并更新客户端。"""
-        new_key_file = pick_next_item(self.current_key_file, self.key_lists)
-        self.api_key = get_api_key(new_key_file)
-        self.current_key_file = new_key_file
-        print(f"Switched to new key from file: {new_key_file}")
-        self.update_client()
+    def get_parsed_output(self, prompt):
+        """Get parsed output from Gemini API using the new API"""
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
+            return self.extract_response(response)
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "rate_limit" in error_str.lower() or "quota" in error_str.lower():
+                print(f"Rate limit exceeded: {error_str}")
+                if self.multiple_api_keys == True:
+                    new_key = pick_next_item(self.current_key_file, self.key_lists)
+                    self.update_key(new_key)
+                    self.current_key_file = new_key
+                    print("New key is from the file: ", new_key)
+                return "rate_limit_exceeded"
+            else:
+                print(f"Error in Gemini API: {error_str}")
+                return ""
+    
+    def extract_response(self, response):
+        """Extract text response from Gemini API response"""
+        try:
+            # New API returns response.text directly
+            if hasattr(response, 'text') and response.text:
+                return response.text
+            # Fallback: try to get from candidates
+            elif hasattr(response, 'candidates') and len(response.candidates) > 0:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                    for part in candidate.content.parts:
+                        if hasattr(part, 'text'):
+                            return part.text
+            return ""
+        except Exception as e:
+            print(f"Error extracting response: {e}")
+            return ""
 
-# --- 主程序入口 ---
+    def update_key(self, key, load_from_file=True):
+        """Update API key"""
+        if load_from_file:
+            self.api_key = get_api_key(key)
+        else:
+            self.api_key = key
+        
+        # Reinitialize the client with new key
+        self.client = genai.Client(api_key=self.api_key)
 
 if __name__ == "__main__":
-    # 假设您有一个名为 'keys/gemini.env' 的文件，其中包含您的 Gemini API 密钥
-    # 或者一个包含多个密钥文件路径的列表
-    # key_files = ['keys/gemini_key1.env', 'keys/gemini_key2.env']
-    
-    try:
-        # 使用单个密钥文件
-        model = GeminiProVision(api_key_path='keys/gemini.env')
-        
-        # 或者使用多个密钥文件列表
-        # model = GeminiProVision(api_key_path=['keys/gemini_key1.env', 'keys/gemini_key2.env'])
+    # Use provided API key directly
+    api_key = "AIzaSyAj3vjB9PrPDNPkAd2cSgxgkccVaZI_CCM"
+    model = Gemini(api_key, model_name="gemini-2.5-flash")
+    prompt = model.prepare_prompt(['https://chromaica.github.io/Museum/ImagenHub_Text-Guided_IE/DiffEdit/sample_34_1.jpg', 'https://chromaica.github.io/Museum/ImagenHub_Text-Guided_IE/input/sample_34_1.jpg'], 'What is difference between two images?')
+    print("prompt prepared")
+    res = model.get_parsed_output(prompt)
+    print("result : \n", res)
 
-        prompt_list = model.prepare_prompt(
-            image_links=['https://chromaica.github.io/Museum/ImagenHub_Text-Guided_IE/DiffEdit/sample_34_1.jpg', 'https://chromaica.github.io/Museum/ImagenHub_Text-Guided_IE/input/sample_34_1.jpg'], 
-            text_prompt='What is the difference between these two images?'
-        )
-        
-        print("--- Prompt Content ---")
-        # 打印文本和图像对象类型
-        for item in prompt_list:
-            if isinstance(item, str):
-                print(f"Text: {item}")
-            elif isinstance(item, Image.Image):
-                print(f"Image: <PIL.Image object size={item.size}>")
-        print("-" * 22)
-
-        res = model.get_parsed_output(prompt_list)
-        
-        print("\n--- Gemini Pro 1.5 Result ---")
-        print(res)
-
-    except FileNotFoundError:
-        print("\nError: API key file not found. Please create a file (e.g., 'keys/gemini.env') and place your Gemini API key in it.")
-    except Exception as e:
-        print(f"\nAn error occurred: {e}")
