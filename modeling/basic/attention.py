@@ -490,8 +490,8 @@ class TrickAttention:
           k_bmm = k.transpose(0, 1)  # (n_heads, Lk, d)
           v_bmm = v.transpose(0, 1)  # (n_heads, Lk, d)
 
-          # q_bmm_quant_fp4, q_quant_scale = self.block_quantizer.quantize_int4(q_bmm)
-          q_bmm_quant_fp4, q_quant_scale = self.block_quantizer.quantize_nvfp4(q_bmm)
+          q_bmm_quant_fp4, q_quant_scale = self.block_quantizer.quantize_int4(q_bmm)
+          # q_bmm_quant_fp4, q_quant_scale = self.block_quantizer.quantize_nvfp4(q_bmm)
 
           attn_scores = torch.bmm(q_bmm, k_bmm.transpose(1, 2) / math.sqrt(D)) # (n_heads, Lq, Lk)
           ref_attn_probs = torch.softmax(attn_scores, dim=-1) # (n_heads, Lq, Lk)

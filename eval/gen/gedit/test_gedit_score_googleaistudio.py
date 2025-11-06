@@ -21,7 +21,7 @@ GROUPS = [
 
 model_name = 'bagel'
 
-def process_single_item(item, vie_score, max_retries=10000):
+def process_single_item(item, vie_score, vie_idx, max_retries=10000):
 
     instruction = item['instruction']
     key = item['key']
@@ -43,6 +43,8 @@ def process_single_item(item, vie_score, max_retries=10000):
             score_list = vie_score.evaluate([pil_image_raw, pil_image_edited], text_prompt)
             sementics_score, quality_score, overall_score = score_list
 
+            # API_KEYS_RECORD[KEY_INDEX] += 1
+
             # print(f"sementics_score: {sementics_score}, quality_score: {quality_score}, overall_score: {overall_score}, instruction_language: {instruction_language}, instruction: {instruction}")
             
             return {
@@ -58,12 +60,18 @@ def process_single_item(item, vie_score, max_retries=10000):
             
             if retry < max_retries - 1:
                 wait_time = (retry + 1) * 2  # 指数退避：2秒, 4秒, 6秒...
-                print(f"Error processing {save_path_item} (attempt {retry + 1}/{max_retries}): {e}")
+                print(f"Using vie_score index: {vie_idx}. Error processing {save_path_item} (attempt {retry + 1}/{max_retries}): {e}")
                 print(f"Waiting {wait_time} seconds before retry...")
                 time.sleep(wait_time)
             else:
+                # if KEY_INDEX + 1 > len(API_KEYS):
                 print(f"Failed to process {save_path_item} after {max_retries} attempts: {e}")
                 return
+                # else:
+                #   print(f"Switching to next API key due to repeated failures.")
+                #   KEY_INDEX += 1
+                #   vie_score.
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -78,6 +86,7 @@ if __name__ == "__main__":
 
     # For Gemini, we don't need azure_endpoint
     vie_scores = [VIEScore(backbone=backbone, task="tie", key_path=k, azure_endpoint='') for k in args.api_keys]
+    print(f"len vie_scores: {len(vie_scores)}")
     dataset = load_dataset("stepfun-ai/GEdit-Bench")['train'].remove_columns(['input_image_raw', 'input_image'])
 
     for model_name in evaluate_group:
@@ -139,7 +148,7 @@ if __name__ == "__main__":
                         print(f"Skipping already processed sample: {sample_prefix}")
                         continue
 
-                    future = executor.submit(process_single_item, item, vie_scores[i%len(vie_scores)])
+                    future = executor.submit(process_single_item, item, vie_scores[i%len(vie_scores)], i%len(vie_scores))
                     futures.append(future)
                 
                 for future in tqdm(as_completed(futures), total=len(futures), desc=f"Processing {model_name} - {group_name}"):

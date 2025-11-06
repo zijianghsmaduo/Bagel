@@ -27,17 +27,20 @@ N_GPU=2  # Number of GPU used in for the evaluation
 N_EVAL=-1  # Number of images to be evaluated
 DEVICE_BASE=6
 MODEL_PATH="./models/BAGEL-7B-MoT"
-OUTPUT_DIR="./outputs/gedit_results"
-timestamp=$(date + "%Y%m%d_%H%M%S")
-OUTPUT_DIR=$OUTPUT_DIR\_$timestamp
+OUTPUT_DIR="/share/liujun/xinhaolee/workspace/mllms/Bagel/outputs/gedit_results"
+timestamp=$(date +"%Y%m%d_%H%M%S")
+# OUTPUT_DIR=$OUTPUT_DIR\_$timestamp
 GEN_DIR="$OUTPUT_DIR/gen_image"
 LOG_DIR="$OUTPUT_DIR/logs"
 EVAL_BACKBONE="gemini"
+KEYS_FILE="./gemini_keys.txt"
 
 # AZURE_ENDPOINT="https://azure_endpoint_url_you_use"  # set up the azure openai endpoint url
 # AZURE_OPENAI_KEY=""  # set up the azure openai key
-API_KEY="AIzaSyAj3vjB9PrPDNPkAd2cSgxgkccVaZI_CCM"
-N_GPT_PARALLEL=10
+
+mapfile -t API_KEYS < $KEYS_FILE
+
+N_GPT_PARALLEL=4
 
 threshold=4e-5
 attn_backend="navie_sparse_quant"
@@ -60,15 +63,15 @@ echo "Dataset Downloaded"
 # # ---------------------
 # #    Generate Images
 # # ---------------------
-for ((i=0; i<$N_GPU; i++)); do
-    CUDA_VISIBLE_DEVICES=$((DEVICE_BASE + i)) \ 
-		python3 eval/gen/gedit/gen_images_gedit.py --model_path "$MODEL_PATH" \
-		 --output_dir "$GEN_DIR"  --shard_id $i --total_shards "$N_GPU" --device 0 \
-		 --eval_num "$N_EVAL" --use_think 2>&1 \
-		 --threshold $threshold --attn_backend $attn_backend \
-		 --sparse_gsize $sparse_gsize \ 
-		 $vae_vit_sparse $self_attn_sparse | tee "$LOG_DIR"/request_$(($N_GPU + i)).log &
-done
+# for ((i=0; i<$N_GPU; i++)); do
+#     CUDA_VISIBLE_DEVICES=$((DEVICE_BASE + i)) \ 
+# 		python3 eval/gen/gedit/gen_images_gedit.py --model_path "$MODEL_PATH" \
+# 		 --output_dir "$GEN_DIR"  --shard_id $i --total_shards "$N_GPU" --device 0 \
+# 		 --eval_num "$N_EVAL" --use_think 2>&1 \
+# 		 --threshold $threshold --attn_backend $attn_backend \
+# 		 --sparse_gsize $sparse_gsize \ 
+# 		 $vae_vit_sparse $self_attn_sparse | tee "$LOG_DIR"/request_$(($N_GPU + i)).log &
+# done
 
 wait
 echo "Image Generation Done"
@@ -80,7 +83,7 @@ echo "Image Generation Done"
 cd eval/gen/gedit
 python test_gedit_score_googleaistudio.py \
 	--save_path "$OUTPUT_DIR" \
-	--api_keys "$API_KEY" \
+	--api_keys "${API_KEYS[@]}" \
 	--max_workers "$N_GPT_PARALLEL" \
 	--backbone "$EVAL_BACKBONE"
 wait
