@@ -37,10 +37,12 @@ from modeling.cache_utils.taylorseer import (
 )
 
 from modeling.basic.attention import ( 
-	# naive_varlen_attention, comp_mse, flash_attn_varlen_attention, 
-	# scaled_dot_attn_varlen_attention, store_attn_scores, ref_varlen_attention,
-	# naive_verlen_sparse_attention,
 	TrickAttention
+)
+
+from modeling.basic.util import (
+	save_map,
+	MLPArgs
 )
 
 from modeling.basic import KVCacheStructure, OctopusKVCache, WomanKVCache
@@ -729,7 +731,8 @@ class Qwen2DecoderLayer(nn.Module):
 class Qwen2MoTDecoderLayer(nn.Module):
 		def __init__(
 				self, 
-				config, 
+				config,
+				mlp_args: MLPArgs,
 				layer_idx: Optional[int] = None, 
 				trick_attn: Optional[TrickAttention] = None,
 				attn_module: Optional[Qwen2Attention] = PackedAttentionMoT,
@@ -739,6 +742,7 @@ class Qwen2MoTDecoderLayer(nn.Module):
 				self.freeze_und = config.freeze_und
 
 				self.self_attn = attn_module(config, layer_idx, trick_attn=trick_attn)
+				self.mlp_args = mlp_args
 
 				self.mlp = Qwen2MLP(config)
 				self.mlp_moe_gen = Qwen2MLP(config)
@@ -862,17 +866,68 @@ class Qwen2MoTDecoderLayer(nn.Module):
 								packed_query_sequence = self.post_attention_layernorm(packed_query_sequence)
 								packed_query_sequence = self.mlp(packed_query_sequence)
 						elif mode == "gen":
+								if self.mlp_args.save_mlp == "mlp_before_norm":
+									assert self.mlp_args.save_dir is not None
+									save_map(
+										is_save=True, 
+										save_dir=self.mlp_args.save_dir, 
+										map=packed_query_sequence,
+										mode=mode,
+										timestep=timestep,
+										layer_idx=layer_idx,
+										cfg_type=cfg_type,
+									)
 								packed_text_query_sequence = packed_query_sequence[packed_text_indexes]
 								packed_vae_query_sequence = packed_query_sequence[packed_vae_token_indexes]
 								packed_text_query_sequence = self.post_attention_layernorm(packed_text_query_sequence).to(torch.bfloat16)
 								packed_vae_query_sequence = self.post_attention_layernorm_moe_gen(packed_vae_query_sequence).to(torch.bfloat16)
 
 								packed_query_sequence_ = torch.zeros_like(packed_query_sequence).to(torch.bfloat16)
+
+								if self.mlp_args.save_mlp == "mlp":
+									assert self.mlp_args.save_dir is not None
+									plot_packed_query_sequence = torch.zeros_like(packed_query_sequence).to(torch.bfloat16)
+									plot_packed_query_sequence[packed_text_indexes] = packed_text_query_sequence
+									plot_packed_query_sequence[packed_vae_token_indexes] = packed_vae_query_sequence
+									save_map(
+										is_save=True, 
+										save_dir=self.mlp_args.save_dir, 
+										map=plot_packed_query_sequence,
+										mode=mode,
+										timestep=timestep,
+										layer_idx=layer_idx,
+										cfg_type=cfg_type,
+									)
+
 								packed_query_sequence_[packed_text_indexes] = self.mlp(packed_text_query_sequence)
 								packed_query_sequence_[packed_vae_token_indexes] = self.mlp_moe_gen(packed_vae_query_sequence)
 								packed_query_sequence = packed_query_sequence_
 
+								if self.mlp_args.save_mlp == "mlp_before_res":
+									assert self.mlp_args.save_dir is not None
+									save_map(
+										is_save=True, 
+										save_dir=self.mlp_args.save_dir, 
+										map=packed_query_sequence,
+										mode=mode,
+										timestep=timestep,
+										layer_idx=layer_idx,
+										cfg_type=cfg_type,
+									)
+
 						packed_query_sequence = residual + packed_query_sequence
+
+						if self.mlp_args.save_mlp == "mlp_after":
+							assert self.mlp_args.save_dir is not None
+							save_map(
+								is_save=True, 
+								save_dir=self.mlp_args.save_dir, 
+								map=packed_query_sequence,
+								mode=mode,
+								timestep=timestep,
+								layer_idx=layer_idx,
+								cfg_type=cfg_type,
+							)
 				
 				if enable_taylorseer:
 						if self.current['type'] == 'full':
@@ -994,7 +1049,7 @@ Decoder_layer_dict = {
 
 
 class Qwen2Model(Qwen2PreTrainedModel):
-		def __init__(self, config, trick_attn: Optional[TrickAttention] = None):
+		def __init__(self, config, mlp_args: MLPArgs, trick_attn: Optional[TrickAttention] = None):
 				super().__init__(config)
 				self.padding_idx = config.pad_token_id
 				self.vocab_size = config.vocab_size
@@ -1003,7 +1058,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
 				self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
 				layer_module = Decoder_layer_dict[config.layer_module]
 				self.layers = nn.ModuleList(
-						[layer_module(config, layer_idx, trick_attn=trick_attn) for layer_idx in range(config.num_hidden_layers)]
+						[layer_module(config, layer_idx=layer_idx, mlp_args=mlp_args, trick_attn=trick_attn) for layer_idx in range(config.num_hidden_layers)]
 				)
 
 				self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -1158,9 +1213,9 @@ class Qwen2Model(Qwen2PreTrainedModel):
 class Qwen2ForCausalLM(Qwen2PreTrainedModel):
 		_tied_weights_keys = ["lm_head.weight"]
 
-		def __init__(self, config, trick_attn: Optional[TrickAttention] = None):
+		def __init__(self, config, mlp_args: MLPArgs, trick_attn: Optional[TrickAttention] = None):
 				super().__init__(config)
-				self.model = Qwen2Model(config, trick_attn=trick_attn)
+				self.model = Qwen2Model(config, mlp_args=mlp_args, trick_attn=trick_attn)
 				self.vocab_size = config.vocab_size
 				self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 

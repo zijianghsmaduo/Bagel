@@ -1,4 +1,6 @@
+import os
 import torch
+from typing import Optional
 
 def compute_coverage(ref: torch.Tensor, pred: torch.Tensor) -> float:
 		"""Compute coverage metric between reference and predicted attention masks.
@@ -18,3 +20,30 @@ def compute_coverage(ref: torch.Tensor, pred: torch.Tensor) -> float:
 		# Compute coverage
 		coverage = intersection / (union + 1e-8)
 		return coverage.item()
+
+def save_map(is_save: bool, save_dir: str, map: torch.Tensor, mode: str,
+    timestep: Optional[int] = None, layer_idx: Optional[int] = None, 
+    cfg_type: Optional[str] = None
+):
+	should_save = layer_idx is not None and is_save and timestep is not None and timestep >= 0
+	if not should_save:
+		return
+	assert (mode == "gen" and timestep is not None and timestep >= 0 and cfg_type is not None) or (mode == "und" and cfg_type is None), "Invalid save conditions."
+	
+	entry_to_save = {
+		"mlp": map.cpu()
+	}
+	filename = f"{mode}_mlp_layer_{layer_idx}_ts_{timestep}.pt" if mode == "und" else f"{mode}_mlp_{cfg_type}_layer_{layer_idx}_ts_{timestep}.pt"
+	os.makedirs(save_dir, exist_ok=True)
+	save_path = os.path.join(save_dir, filename)
+	if not os.path.exists(save_path):
+		torch.save([entry_to_save], save_path)
+
+class MLPArgs:
+	def __init__(
+		self,
+		save_mlp: Optional[str]= None,
+		save_dir: Optional[str]= None,
+	):
+		self.save_mlp = save_mlp
+		self.save_dir = save_dir

@@ -25,6 +25,7 @@ from data.data_utils import pil_img2rgb, add_special_tokens
 from modeling.bagel import (
     BagelConfig, Bagel, Qwen2Config, Qwen2ForCausalLM, SiglipVisionConfig, SiglipVisionModel
 )
+from modeling.basic.util import MLPArgs
 from modeling.qwen2 import Qwen2Tokenizer
 from modeling.bagel.qwen2_navit import NaiveCache
 from modeling.autoencoder import load_ae
@@ -61,18 +62,27 @@ if __name__ == "__main__":
 	parser.add_argument("--sparse_gsize", type=int, default=1, help="Group size for sparse attention.")
 	parser.add_argument("--vae_vit_sparse", action='store_true', help="Whether to apply sparsity to VAE and ViT attention.")
 	parser.add_argument("--self_attn_sparse", action='store_true', help="Whether to apply sparsity to self-attention.")
+	parser.add_argument("--mlp_save", type=str, default=None, help="Whether to save MLP activations.")
+	parser.add_argument("--mlp_save_dir", type=str, default="maps/mlp_octupusy_flash", help="Directory to save MLP activations.")
 	args = parser.parse_args()
 
 	attention_backend = args.attn_backend
-	base_attention = TrickAttention(
-		attention_backend=attention_backend,
-		sparse_gsize=args.sparse_gsize, sparse_topk=0.2, sparse_threshold=args.threshold if args.threshold is not None else 4e-5,
-		quant_gsize=32,
-		posterior_truncate_threshold=args.threshold if args.threshold is not None else 4e-5,
-		save_dir=args.save_dir if args.save_dir else "attn_probs_qkv_dump_tmp",
-		is_save=args.is_save, is_plot=False, is_truncate=args.is_truncate,
-		plot_dir="plot/sparse_attention_scores", heads_to_plot=[0, 1, 2],
-		vae_vit=args.vae_vit_sparse, self_attn=args.self_attn_sparse
+	base_attention = None
+	if attention_backend != "flash":
+		base_attention = TrickAttention(
+			attention_backend=attention_backend,
+			sparse_gsize=args.sparse_gsize, sparse_topk=0.2, sparse_threshold=args.threshold if args.threshold is not None else 4e-5,
+			quant_gsize=32,
+			posterior_truncate_threshold=args.threshold if args.threshold is not None else 4e-5,
+			save_dir=args.save_dir if args.save_dir else "attn_probs_qkv_dump_tmp",
+			is_save=args.is_save, is_plot=False, is_truncate=args.is_truncate,
+			plot_dir="plot/sparse_attention_scores", heads_to_plot=[0, 1, 2],
+			vae_vit=args.vae_vit_sparse, self_attn=args.self_attn_sparse
+		)
+
+	mlp_args = MLPArgs(
+		save_mlp=args.mlp_save,
+		save_dir=args.mlp_save_dir
 	)
 
 	model_path = "./models/BAGEL-7B-MoT"  # Download from https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT
@@ -105,7 +115,7 @@ if __name__ == "__main__":
 	)
 
 	with init_empty_weights():
-			language_model = Qwen2ForCausalLM(llm_config, trick_attn=base_attention)
+			language_model = Qwen2ForCausalLM(llm_config, mlp_args=mlp_args, trick_attn=base_attention)
 			vit_model      = SiglipVisionModel(vit_config)
 			model          = Bagel(language_model, vit_model, config)
 			model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config, meta=True)
@@ -286,10 +296,10 @@ if __name__ == "__main__":
 
 	# image1 = Image.open('test_images/women.jpg')
 	# editing_inference("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
-	# image2 = Image.open('test_images/octupusy.jpg')
-	# editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
-	image1 = Image.open('test_images/women.jpg')
-	editing_inference_with_thinking("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
+	image2 = Image.open('test_images/octupusy.jpg')
+	editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
+	# image1 = Image.open('test_images/women.jpg')
+	# editing_inference_with_thinking("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
 
 	# image3 = Image.open('test_images/meme.jpg')
 	# understanding_inference("Can someone explain what’s funny about this meme??", image3)

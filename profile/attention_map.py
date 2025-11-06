@@ -709,6 +709,8 @@ def kvcache_global_value_map(load_dir="attn_probs_qkv_dump", elem='k', name='', 
 def compute_cosine_similarity(tensor1, tensor2):
     assert tensor1.shape == tensor2.shape, "Input tensors must have the same shape."
     H, L, D = tensor1.shape
+    tensor1 = tensor1.to(torch.float32)
+    tensor2 = tensor2.to(torch.float32)
     numerator = (tensor1 * tensor2).sum(dim=-1)
     assert numerator.shape == (H, L), f"Unexpected numerator shape: {numerator.shape}"
     denominator = torch.norm(tensor1, dim=-1) * torch.norm(tensor2, dim=-1)
@@ -729,6 +731,9 @@ def compute_group_head_cosine_similarity(ref_tensor1, targ_tensor2):
     assert H % group_size == 0, "Number of heads H must be divisible by group_size."
     
     num_groups = H // group_size
+
+    ref_tensor1 = ref_tensor1.to(torch.float32)
+    targ_tensor2 = targ_tensor2.to(torch.float32)
 
     # 1. Group the tensors
     # Shape: (num_groups, group_size, L, D)
@@ -764,9 +769,25 @@ def compute_group_head_cosine_similarity(ref_tensor1, targ_tensor2):
 def compute_mse_similarity(tensor1, tensor2):
     assert tensor1.shape == tensor2.shape, "Input tensors must have the same shape."
     H, L, D = tensor1.shape
+    tensor1 = tensor1.to(torch.float32)
+    tensor2 = tensor2.to(torch.float32)
     mse = torch.mean((tensor1 - tensor2) ** 2, dim=-1)
     assert mse.shape == (H, L), f"Unexpected MSE shape: {mse.shape}"
     return mse
+
+def compute_norm_mse_similarity(tensor1, tensor2):
+    assert tensor1.shape == tensor2.shape, "Input tensors must have the same shape."
+    H, L, D = tensor1.shape
+    tensor1 = tensor1.to(torch.float32)
+    tensor2 = tensor2.to(torch.float32)
+    mse = torch.mean((tensor1 - tensor2) ** 2, dim=-1)
+    mse_max = torch.max(mse)
+    denorminator = torch.sqrt(torch.mean(tensor1 ** 2, dim=-1) * torch.mean(tensor2 ** 2, dim=-1))
+    mse = mse / denorminator
+    mse = torch.nan_to_num(mse, nan=mse_max)
+    assert mse.shape == (H, L), f"Unexpected MSE shape: {mse.shape}"
+    return mse
+   
 
 def compute_group_head_mse_similarity(ref_tensor1, targ_tensor2):
     """
@@ -781,6 +802,8 @@ def compute_group_head_mse_similarity(ref_tensor1, targ_tensor2):
     
     num_groups = H // group_size
 
+    ref_tensor1 = ref_tensor1.to(torch.float32)
+    targ_tensor2 = targ_tensor2.to(torch.float32)
     # 1. Group the tensors
     # Shape: (num_groups, group_size, L, D)
     ref_grouped = ref_tensor1.view(num_groups, group_size, L, D)
@@ -807,7 +830,7 @@ def compute_group_head_mse_similarity(ref_tensor1, targ_tensor2):
     
     return final_mse_map
 
-def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', heads_to_plot=None, timestep=20, mode='mse'):
+def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', heads_to_plot=None, timestep=20, mode='mse', prefix='qkv_attn_probs', sufix="_batch_0"):
   if heads_to_plot is None:
     heads_to_plot = list(range(-1, 28))
 
@@ -818,7 +841,7 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
     raise ValueError(f"Invalid elem: {elem}. Must be 'q'.")
   
   mse_threshold = 0.05
-  cosine_threshold = 0.85
+  cosine_threshold = 0.99
 
   # --- 提前创建好 norm 对象和 cmap ---
   from matplotlib.colors import Normalize, PowerNorm, LogNorm
@@ -829,21 +852,34 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
   # norm_to_use = LogNorm(vmin=1e-8, vmax=vmax_estimate)
   norm_to_use = None
 
+  elem = 'q' if prefix != "mlp" else 'mlp'
+
   figure_path = f"plot/{elem}_cfg_similarity_global_{name}/t_{timestep}"
   if not os.path.exists(figure_path):
     os.makedirs(figure_path)
   write_log = f"load_dir: {load_dir}\nelem: {elem}\nname: {name}\n"
   with open(os.path.join(figure_path, f"{elem}_cfg_similarity_global_{name}log.txt"), 'w') as f:
     f.write(write_log)
+
+  xlabel = "Query" if prefix != "mlp" else "Activation"
+
+  similarity_cfg_text_list = []
+  similarity_cfg_image_list = []
   
   for layer_idx in layer_idxes:
-      normal_file = f"./{load_dir}/gen_qkv_attn_probs_normal_layer_{layer_idx}_ts_{timestep}_batch_0.pt"
-      cfg_text_file = f"./{load_dir}/gen_qkv_attn_probs_cfg_text_layer_{layer_idx}_ts_{timestep}_batch_0.pt"
-      cfg_image_file = f"./{load_dir}/gen_qkv_attn_probs_cfg_img_layer_{layer_idx}_ts_{timestep}_batch_0.pt"
-      
+      normal_file = f"./{load_dir}/gen_{prefix}_normal_layer_{layer_idx}_ts_{timestep}{sufix}.pt"
+      cfg_text_file = f"./{load_dir}/gen_{prefix}_cfg_text_layer_{layer_idx}_ts_{timestep}{sufix}.pt"
+      cfg_image_file = f"./{load_dir}/gen_{prefix}_cfg_img_layer_{layer_idx}_ts_{timestep}{sufix}.pt"
+
       normal_q = torch.load(normal_file)[0][elem]
       cfg_text_q = torch.load(cfg_text_file)[0][elem]
       cfg_image_q = torch.load(cfg_image_file)[0][elem]
+
+      nr_heads = 28
+      if prefix == "mlp":
+        normal_q = normal_q.view(nr_heads, normal_q.shape[0], -1)
+        cfg_text_q = cfg_text_q.view(nr_heads, cfg_text_q.shape[0], -1)
+        cfg_image_q = cfg_image_q.view(nr_heads, cfg_image_q.shape[0], -1)
 
       # tmp_file = f"./{load_dir}/gen_qkv_attn_probs_layer_{layer_idx}_ts_{timestep}_batch_0.pt"
       # all_entries = torch.load(tmp_file)
@@ -874,6 +910,9 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
       elif mode == 'group_mse':
         similarity_cfg_text = compute_group_head_mse_similarity(normal_q, cfg_text_q)
         similarity_cfg_image = compute_group_head_mse_similarity(normal_q, cfg_image_q)
+      elif mode == 'norm_mse':
+        similarity_cfg_text = compute_norm_mse_similarity(normal_q, cfg_text_q)
+        similarity_cfg_image = compute_norm_mse_similarity(normal_q, cfg_image_q)
       else:
         raise ValueError(f"Invalid mode: {mode}. Must be 'cosine' or 'mse'.")
       
@@ -882,24 +921,26 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
       percentage_of_high_similarity_text = torch.mean((similarity_cfg_text <= mse_threshold if 'mse' in mode else similarity_cfg_text >= cosine_threshold).float()).item()
       percentage_of_high_similarity_image = torch.mean((similarity_cfg_image <= mse_threshold if 'mse' in mode else similarity_cfg_image >= cosine_threshold).float()).item()
       data_aspect_ratio = similarity_cfg_text.shape[1] / similarity_cfg_text.shape[0]
+      similarity_cfg_text_list.append(percentage_of_high_similarity_text)
+      similarity_cfg_image_list.append(percentage_of_high_similarity_image)
 
       vmin = torch.min(torch.min(similarity_cfg_text), torch.min(similarity_cfg_image)).item()
       vmax = torch.max(torch.max(similarity_cfg_text), torch.max(similarity_cfg_image)).item()
       norm_to_use = Normalize(vmin=vmin, vmax=vmax)
       print(f"vmin: {vmin}, vmax: {vmax}")
-      kv_plot(similarity_cfg_text, ax=axes_flat[0], title=f"MSE Similarity with CFG Text\n{percentage_of_high_similarity_text:.2%} below {mse_threshold}" if 'mse' in mode else f"{percentage_of_high_similarity_text:.2%} above {cosine_threshold}",
+      kv_plot(similarity_cfg_text, ax=axes_flat[0], title=f"{mode} similarity with CFG text\n{percentage_of_high_similarity_text:.2%}" + (f" below {mse_threshold}" if 'mse' in mode else f" above {cosine_threshold}"),
                          vmin=vmin, vmax=vmax, 
                          norm=norm_to_use,      # 传入统一的 norm 对象
                          cmap=cmap_to_use, 
-                         xlabel="Query", ylabel="Head",
+                         xlabel=xlabel, ylabel="Head",
                          tick_density=100, square=False,
                          aspect_ratio=data_aspect_ratio)
 
-      kv_plot(similarity_cfg_image, ax=axes_flat[1], title=f"MSE Similarity with CFG Image\n{percentage_of_high_similarity_image:.2%} below {mse_threshold}" if 'mse' in mode else f"{percentage_of_high_similarity_image:.2%} above {cosine_threshold}",
+      kv_plot(similarity_cfg_image, ax=axes_flat[1], title=f"{mode} similarity with CFG Image\n{percentage_of_high_similarity_image:.2%}" + (f" below {mse_threshold}" if 'mse' in mode else f" above {cosine_threshold}"),
                          vmin=vmin, vmax=vmax, 
                          norm=norm_to_use,      # 传入统一的 norm 对象
                          cmap=cmap_to_use, 
-                         xlabel="Query", ylabel="Head",
+                         xlabel=xlabel, ylabel="Head",
                          tick_density=100, square=False,
                          aspect_ratio=data_aspect_ratio)
       
@@ -938,6 +979,11 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
       plt.close(fig)
       print(f"Saved figure to {os.path.join(figure_path, figure_name)}")
 
+  write_log = f"Average similarity with CFG text: {np.mean(np.array(similarity_cfg_text_list))}\n"
+  write_log += f"Average similarity with CFG image: {np.mean(np.array(similarity_cfg_image_list))}\n"
+  with open(os.path.join(figure_path, f"{elem}_cfg_similarity_global_{name}log.txt"), 'a') as f:
+    f.write(write_log)
+
 if __name__ == "__main__":
   # gen_vae_vit_attn_map(load_dir = "attn_probs_qkv_dump_new", is_truncate = True, min_threshold = 4e-5, heads_to_plot=None, name="new_")
   # gen_vae_vit_attn_map(load_dir = "attn_probs_qkv_dump", is_truncate = True, min_threshold = 4e-5, heads_to_plot=None)
@@ -962,8 +1008,12 @@ if __name__ == "__main__":
   parser.add_argument('--layer_bias', type=int, default=28,
                       help="Number of layers to process")
   parser.add_argument('--heads', type=str, default='[-2]')
-  parser.add_argument('--cfg_mode', type=str, choices=['mse', 'group_mse', 'cosine', 'group_cosine'], default='mse',
-                      help="Mode for CFG similarity: 'mse', 'group_mse', 'cosine' or 'group_cosine'")
+  parser.add_argument('--cfg_mode', type=str, choices=['mse', 'group_mse', 'norm_mse', 'cosine', 'group_cosine'], default='mse',
+                      help="Mode for CFG similarity: 'mse', 'group_mse', 'norm_mse', 'cosine' or 'group_cosine'")
+  parser.add_argument('--prefix', type=str, default='qkv_attn_probs',
+                      help="Prefix for CFG similarity files") 
+  parser.add_argument('--sufix', action="store_true",
+                      help="Suffix for CFG similarity files")
   args = parser.parse_args()
 
   heads = json.loads(args.heads)
@@ -989,4 +1039,5 @@ if __name__ == "__main__":
                           layer_idxes=layer_idxes, name=args.name, special_tokens=True, heads_to_plot=heads)
   elif args.mode == 'cfg_similarity':
       layer_idxes = list(range(args.layer_base, args.layer_base + args.layer_bias))
-      cfg_similarity_heatmap(load_dir=args.load_dir, name=args.name, heads_to_plot=heads, timestep=args.timestep, mode=args.cfg_mode)
+      sufix = "_batch_0" if args.sufix else ""
+      cfg_similarity_heatmap(load_dir=args.load_dir, name=args.name, heads_to_plot=heads, timestep=args.timestep, mode=args.cfg_mode, prefix=args.prefix, sufix=sufix)
