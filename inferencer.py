@@ -10,6 +10,8 @@ import torch
 from data.data_utils import pil_img2rgb
 from modeling.bagel.qwen2_navit import NaiveCache
 
+from modeling.basic import KVCacheStructure
+
 
 
 VLM_THINK_SYSTEM_PROMPT = '''You should first think about the reasoning process in the mind and then provide the user with the answer. 
@@ -59,7 +61,7 @@ class InterleaveInferencer:
         return gen_context
 
     @torch.no_grad()
-    def update_context_image(self, image, gen_context, vae=True, vit=True):
+    def update_context_image(self, image, gen_context, kv_struct: KVCacheStructure, vae=True, vit=True):
         # used for interleave data, currently only support 1 data inference, 
 
         assert vae or vit
@@ -69,6 +71,7 @@ class InterleaveInferencer:
 
         if vae:
             ## update vae
+            og_len = kv_lens[0]
             generation_input, kv_lens, ropes = self.model.prepare_vae_images(
                 curr_kvlens=kv_lens,
                 curr_rope=ropes, 
@@ -76,10 +79,12 @@ class InterleaveInferencer:
                 transforms=self.vae_transform, 
                 new_token_ids=self.new_token_ids,
             )
+            kv_struct.vae = (og_len, kv_lens[0]-1)
             past_key_values = self.model.forward_cache_update_vae(self.vae_model, past_key_values, **generation_input)
         
         if vit:
             ## update vit
+            og_len = kv_lens[0]
             generation_input, kv_lens, ropes = self.model.prepare_vit_images(
                 curr_kvlens=kv_lens,
                 curr_rope=ropes, 
@@ -87,6 +92,7 @@ class InterleaveInferencer:
                 transforms=self.vit_transform, 
                 new_token_ids=self.new_token_ids,
             )
+            kv_struct.vit = (og_len, kv_lens[0]-1)
             past_key_values = self.model.forward_cache_update_vit(past_key_values, **generation_input)
 
         gen_context['kv_lens'] = kv_lens
@@ -99,7 +105,8 @@ class InterleaveInferencer:
     def gen_image(
         self, 
         image_shape, 
-        gen_context, 
+        gen_context,
+        kv_struct: KVCacheStructure,
         cfg_text_scale=4.0,
         cfg_img_scale=1.5,
 
@@ -165,6 +172,7 @@ class InterleaveInferencer:
             cfg_img_key_values_lens=generation_input_cfg_img['cfg_key_values_lens'],
             cfg_img_packed_key_value_indexes=generation_input_cfg_img['cfg_packed_key_value_indexes'],
             enable_taylorseer=enable_taylorseer,
+            kv_cache_struct=kv_struct,
         )
 
         image = self.decode_image(unpacked_latent[0], image_shape)
@@ -229,6 +237,7 @@ class InterleaveInferencer:
         gen_context = self.init_gen_context()
         cfg_text_context = deepcopy(gen_context)
         cfg_img_context = deepcopy(gen_context)
+        kv_struct = KVCacheStructure()
 
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             if think:
@@ -236,21 +245,30 @@ class InterleaveInferencer:
                     system_prompt = VLM_THINK_SYSTEM_PROMPT 
                 else:
                     system_prompt = GEN_THINK_SYSTEM_PROMPT
+                og_len = gen_context['kv_lens'][0]
                 gen_context = self.update_context_text(system_prompt, gen_context)
+                new_len = gen_context['kv_lens'][0]
+                kv_struct.system_prompt = (og_len, new_len-1)
+
                 cfg_img_context = self.update_context_text(system_prompt, cfg_img_context)
                 print(f"After adding system prompt, kv_lens: {gen_context['kv_lens']}")
 
             for input_term in input_lists:
                 if isinstance(input_term, str):
                     cfg_text_context = deepcopy(gen_context)
+
+                    og_len = gen_context['kv_lens'][0]
                     gen_context = self.update_context_text(input_term, gen_context)
+                    new_len = gen_context['kv_lens'][0]
+                    kv_struct.input_prompt = (og_len, new_len-1)
+
                     print(f"After adding input text, kv_lens: {gen_context['kv_lens']}")
                     cfg_img_context = self.update_context_text(input_term, cfg_img_context)
 
                 elif isinstance(input_term, Image.Image):
                     input_term = self.vae_transform.resize_transform(pil_img2rgb(input_term))
                     print("VAE input image size:", input_term.size)
-                    gen_context = self.update_context_image(input_term, gen_context, vae=not understanding_output)
+                    gen_context = self.update_context_image(input_term, gen_context, vae=not understanding_output, kv_struct=kv_struct)
                     print(f"After adding input image, kv_lens: {gen_context['kv_lens']}")
                     image_shapes = input_term.size[::-1]
                     cfg_text_context = deepcopy(gen_context)
@@ -267,13 +285,21 @@ class InterleaveInferencer:
                     gen_text = self.gen_text(gen_context, do_sample=do_sample, temperature=text_temperature, max_length=max_think_token_n)
                     # ?? 为什么不在 gen_text 执行之后直接返回新的 context = { kvcache, RoPE, kv_lens } 或者在 gen_text 里直接更新 gen_context
                     # ?? 而是生成完 text 之后再 update_context_text
+                    og_len = gen_context['kv_lens'][0]
                     gen_context = self.update_context_text(gen_text, gen_context)
+                    new_len = gen_context['kv_lens'][0]
+                    kv_struct.gen_text = (og_len, new_len-1)
+
                     print(f"After adding generated text, kv_lens: {gen_context['kv_lens']}")
                     output_list.append(gen_text)
+
+                kv_struct.calculate_gen_image()
+                kv_struct.print_structure()
 
                 img = self.gen_image(
                     image_shapes, 
                     gen_context, 
+                    kv_struct=kv_struct,
                     cfg_text_precontext=cfg_text_context, 
                     cfg_img_precontext=cfg_img_context,
 

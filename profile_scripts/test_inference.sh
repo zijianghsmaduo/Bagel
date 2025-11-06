@@ -30,19 +30,20 @@ threshold=4e-5
 ## Attention backend options: naive, naive_truncate, naive_sparse, naive_sparse_quant
 # attn_backend="naive"
 # attn_backend="naive_sparse_quant"
-attn_backend="flash"
+# attn_backend="flash"
+attn_backend="naive_sparse_quant_relocate"
 sparse_gsize=10
 vae_vit_sparse=--vae_vit_sparse
 self_attn_sparse=--self_attn_sparse
 
-mlp_save="mlp"
-mlp_save_dir="maps/mlp_octupusy_flash_tmp"
+# mlp_save=--mlp_save "mlp"
+# mlp_save_dir=--mlp_save_dir "maps/mlp_octupusy_flash_tmp"
 
 CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES \
 	python3 ./profile/test_inference.py $is_save $is_truncate --save_dir $save_dir \
 	--threshold $threshold --attn_backend $attn_backend \
 	--sparse_gsize $sparse_gsize $vae_vit_sparse $self_attn_sparse \
-	--mlp_save $mlp_save --mlp_save_dir $mlp_save_dir &
+	$mlp_save $mlp_save_dir &
 
 wait
 

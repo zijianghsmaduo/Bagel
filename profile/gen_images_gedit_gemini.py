@@ -440,6 +440,16 @@ def set_seeds(seed):
 		torch.backends.cudnn.benchmark = False
 
 
+def shuffle_half_list(original_indices, seed):
+		"""Shuffle a list with a given seed."""
+		import random
+		random.seed(seed)
+		random.Random(seed).shuffle(original_indices)
+		half_size = len(original_indices) // 2
+		half_indices = original_indices[:half_size]
+		return half_indices
+
+
 def process_dataset(
 		model, vae_model, tokenizer, new_token_ids, vae_transform, vit_transform,
 		output_dir, cfg_text_scale=4.0, cfg_img_scale=1.5, 
@@ -453,7 +463,11 @@ def process_dataset(
 
 		dataset = load_dataset("stepfun-ai/GEdit-Bench")['train']
 		idx_list = list(range(len(dataset)))
+		
+		idx_list = shuffle_half_list(idx_list, seed=42 + shard_id)
+
 		idx_list = idx_list[shard_id::total_shards]
+
 		
 		for data_idx in tqdm(idx_list):
 				if eval_num != -1 and data_idx >= eval_num:
