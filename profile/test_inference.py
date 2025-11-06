@@ -300,19 +300,24 @@ if __name__ == "__main__":
 	editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
 	# image1 = Image.open('test_images/women.jpg')
 	# editing_inference_with_thinking("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
+	image2 = Image.open('test_images/octupusy.jpg')
+	editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
+	# image1 = Image.open('test_images/women.jpg')
+	# editing_inference_with_thinking("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
 
 	# image3 = Image.open('test_images/meme.jpg')
 	# understanding_inference("Can someone explain what’s funny about this meme??", image3)
 	# image3 = Image.open('test_images/car.png')
 	# understanding_inference("Give a description of this car.", image3)
 
-	if args.is_truncate and args.is_save:
-		sparsity = base_attention.get_sparsity()
-		write_txt = f"Sparsity levels for each timestep and layer:\n{sparsity}" + "\nAverage sparsity per layer:\n" + str(np.mean(sparsity, axis=0))
-		with open(os.path.join(args.save_dir, "sparsity_levels.txt"), "w") as f:
-			f.write(write_txt)
-		print(sparsity)
-	else:
-		sparsity = base_attention.get_sparsity()
-		print(f"Sparsity for VAE + ViT:\n" + str(np.mean(np.mean(sparsity[0], axis=0))))
-		print(f"Sparsity for Self-Attention:\n" + str(np.mean(np.mean(sparsity[1], axis=0))))
+	if base_attention is not None:
+		if args.is_truncate and args.is_save:
+			sparsity = base_attention.get_sparsity()
+			write_txt = f"Sparsity levels for each timestep and layer:\n{sparsity}" + "\nAverage sparsity per layer:\n" + str(np.mean(sparsity, axis=0))
+			with open(os.path.join(args.save_dir, "sparsity_levels.txt"), "w") as f:
+				f.write(write_txt)
+			print(sparsity)
+		else:
+			sparsity = base_attention.get_sparsity()
+			print(f"Sparsity for VAE + ViT:\n" + str(np.mean(np.mean(sparsity[0], axis=0))))
+			print(f"Sparsity for Self-Attention:\n" + str(np.mean(np.mean(sparsity[1], axis=0))))

@@ -842,6 +842,7 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
   
   mse_threshold = 0.05
   cosine_threshold = 0.99
+  cosine_threshold = 0.99
 
   # --- 提前创建好 norm 对象和 cmap ---
   from matplotlib.colors import Normalize, PowerNorm, LogNorm
@@ -928,6 +929,7 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
       vmax = torch.max(torch.max(similarity_cfg_text), torch.max(similarity_cfg_image)).item()
       norm_to_use = Normalize(vmin=vmin, vmax=vmax)
       print(f"vmin: {vmin}, vmax: {vmax}")
+      kv_plot(similarity_cfg_text, ax=axes_flat[0], title=f"{mode} similarity with CFG text\n{percentage_of_high_similarity_text:.2%}" + (f" below {mse_threshold}" if 'mse' in mode else f" above {cosine_threshold}"),
       kv_plot(similarity_cfg_text, ax=axes_flat[0], title=f"{mode} similarity with CFG text\n{percentage_of_high_similarity_text:.2%}" + (f" below {mse_threshold}" if 'mse' in mode else f" above {cosine_threshold}"),
                          vmin=vmin, vmax=vmax, 
                          norm=norm_to_use,      # 传入统一的 norm 对象

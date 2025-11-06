@@ -160,7 +160,7 @@ class TrickAttention:
 
           # attn_scores = torch.bmm(q_bmm, k_bmm.transpose(1, 2)) * scale # (n_heads, Lq, Lk)
           attn_scores = torch.bmm(q_bmm, k_bmm.transpose(1, 2) / math.sqrt(D)) # (n_heads, Lq, Lk)
-
+          
           if causal:
               Lq, Lk = attn_scores.size(1), attn_scores.size(2)
               if Lq > 1:
