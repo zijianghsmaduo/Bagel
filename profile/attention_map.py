@@ -818,7 +818,7 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
     raise ValueError(f"Invalid elem: {elem}. Must be 'q'.")
   
   mse_threshold = 0.05
-  cosine_threshold = 0.85
+  cosine_threshold = 0.99
 
   # --- 提前创建好 norm 对象和 cmap ---
   from matplotlib.colors import Normalize, PowerNorm, LogNorm
@@ -887,7 +887,7 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
       vmax = torch.max(torch.max(similarity_cfg_text), torch.max(similarity_cfg_image)).item()
       norm_to_use = Normalize(vmin=vmin, vmax=vmax)
       print(f"vmin: {vmin}, vmax: {vmax}")
-      kv_plot(similarity_cfg_text, ax=axes_flat[0], title=f"MSE Similarity with CFG Text\n{percentage_of_high_similarity_text:.2%} below {mse_threshold}" if 'mse' in mode else f"{percentage_of_high_similarity_text:.2%} above {cosine_threshold}",
+      kv_plot(similarity_cfg_text, ax=axes_flat[0], title=f"{mode} similarity with CFG text\n{percentage_of_high_similarity_text:.2%}" + (f" below {mse_threshold}" if 'mse' in mode else f" above {cosine_threshold}"),
                          vmin=vmin, vmax=vmax, 
                          norm=norm_to_use,      # 传入统一的 norm 对象
                          cmap=cmap_to_use, 
@@ -895,7 +895,7 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
                          tick_density=100, square=False,
                          aspect_ratio=data_aspect_ratio)
 
-      kv_plot(similarity_cfg_image, ax=axes_flat[1], title=f"MSE Similarity with CFG Image\n{percentage_of_high_similarity_image:.2%} below {mse_threshold}" if 'mse' in mode else f"{percentage_of_high_similarity_image:.2%} above {cosine_threshold}",
+      kv_plot(similarity_cfg_image, ax=axes_flat[1], title=f"{mode} similarity with CFG image\n{percentage_of_high_similarity_image:.2%}" + (f" below {mse_threshold}" if 'mse' in mode else f" above {cosine_threshold}"),
                          vmin=vmin, vmax=vmax, 
                          norm=norm_to_use,      # 传入统一的 norm 对象
                          cmap=cmap_to_use, 

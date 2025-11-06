@@ -264,6 +264,114 @@ class InterleaveInferencer:
 
         return gen_context, cfg_text_context, cfg_img_context
 
+    def gen_image_context_excavate(
+        self,
+        input_lists: List[Union[str, Image.Image]],
+        gen_text,
+        normal_start,
+        cfg_text_start,
+        cfg_img_start,
+        think
+    ):
+        gen_context = self.init_gen_context()
+        cfg_text_context = deepcopy(gen_context)
+        cfg_img_context = deepcopy(gen_context)
+
+        gen_context['ropes'] = [0]
+        cfg_text_context['ropes'] = [0]
+        cfg_img_context['ropes'] = [0]
+
+        with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
+            if think:
+                # if understanding_output:
+                #     system_prompt = VLM_THINK_SYSTEM_PROMPT 
+                # else:
+                system_prompt = GEN_THINK_SYSTEM_PROMPT
+                gen_context = self.update_context_text(system_prompt, gen_context)
+                cfg_img_context = self.update_context_text(system_prompt, cfg_img_context)
+                cfg_text_context = self.update_context_text(system_prompt, cfg_text_context)
+                print(f"After adding system prompt, kv_lens: {gen_context['kv_lens']}")
+
+            for input_term in input_lists:
+                if isinstance(input_term, str):
+                    # cfg_text_context = deepcopy(gen_context)
+                    gen_context = self.update_context_text(input_term, gen_context)
+                    print(f"After adding input text, kv_lens: {gen_context['kv_lens']}")
+                    cfg_img_context = self.update_context_text(input_term, cfg_img_context)
+
+                elif isinstance(input_term, Image.Image):
+                    input_term = self.vae_transform.resize_transform(pil_img2rgb(input_term))
+                    print("VAE input image size:", input_term.size)
+                    gen_context = self.update_context_image(input_term, gen_context, vae=True)
+                    print(f"After adding input image, kv_lens: {gen_context['kv_lens']}")
+                    cfg_text_context = self.update_context_image(input_term, cfg_text_context, vae=True)
+                    # cfg_text_context = deepcopy(gen_context)
+
+                else:
+                    raise ValueError(f"Unsupported input type: {type(input_term)}")
+
+            if think:
+                gen_context = self.update_context_text(gen_text, gen_context)
+
+        cfg_text_context["ropes"] = deepcopy(gen_context["ropes"])
+        cfg_img_context["ropes"] = deepcopy(gen_context["ropes"])
+
+        return gen_context, cfg_text_context, cfg_img_context
+
+    def gen_image_context_fronting(
+        self,
+        input_lists: List[Union[str, Image.Image]],
+        gen_text,
+        normal_start,
+        cfg_text_start,
+        cfg_img_start,
+        think
+    ):
+        gen_context = self.init_gen_context()
+        cfg_text_context = deepcopy(gen_context)
+        cfg_img_context = deepcopy(gen_context)
+
+        gen_context['ropes'] = [1]
+        cfg_text_context['ropes'] = [1]
+        cfg_img_context['ropes'] = [1]
+
+        with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
+            if think:
+                # if understanding_output:
+                #     system_prompt = VLM_THINK_SYSTEM_PROMPT 
+                # else:
+                system_prompt = GEN_THINK_SYSTEM_PROMPT
+                gen_context = self.update_context_text(system_prompt, gen_context)
+                cfg_img_context = self.update_context_text(system_prompt, cfg_img_context)
+                cfg_text_context = self.update_context_text(system_prompt, cfg_text_context)
+                print(f"After adding system prompt, kv_lens: {gen_context['kv_lens']}")
+
+            for input_term in input_lists:
+                if isinstance(input_term, str):
+                    # cfg_text_context = deepcopy(gen_context)
+                    gen_context = self.update_context_text(input_term, gen_context)
+                    print(f"After adding input text, kv_lens: {gen_context['kv_lens']}")
+                    cfg_img_context = self.update_context_text(input_term, cfg_img_context)
+
+                elif isinstance(input_term, Image.Image):
+                    input_term = self.vae_transform.resize_transform(pil_img2rgb(input_term))
+                    print("VAE input image size:", input_term.size)
+                    gen_context = self.update_context_image(input_term, gen_context, vae=True)
+                    print(f"After adding input image, kv_lens: {gen_context['kv_lens']}")
+                    cfg_text_context = self.update_context_image(input_term, cfg_text_context, vae=True)
+                    # cfg_text_context = deepcopy(gen_context)
+
+                else:
+                    raise ValueError(f"Unsupported input type: {type(input_term)}")
+
+            if think:
+                gen_context = self.update_context_text(gen_text, gen_context)
+
+        gen_context["ropes"] = [0]
+        cfg_text_context["ropes"] = [0]
+        cfg_img_context["ropes"] = [0]
+
+        return gen_context, cfg_text_context, cfg_img_context
 
             
     @torch.no_grad()
@@ -364,7 +472,24 @@ class InterleaveInferencer:
                 
                 print(f"normal_start: {normal_start}, cfg_text_start: {cfg_text_start}, cfg_img_start: {cfg_img_start}")
 
-                gen_context_tr, cfg_text_context_tr, cfg_img_context_tr = self.gen_image_context(
+                # gen_context_tr, cfg_text_context_tr, cfg_img_context_tr = self.gen_image_context(
+                #     input_lists,
+                #     gen_text,
+                #     normal_start,
+                #     cfg_text_start,
+                #     cfg_img_start,
+                #     think
+                # )
+
+                # gen_context_tr, cfg_text_context_tr, cfg_img_context_tr = self.gen_image_context_excavate(
+                #     input_lists,
+                #     gen_text,
+                #     normal_start,
+                #     cfg_text_start,
+                #     cfg_img_start,
+                #     think
+                # )
+                gen_context_tr, cfg_text_context_tr, cfg_img_context_tr = self.gen_image_context_fronting(
                     input_lists,
                     gen_text,
                     normal_start,
@@ -372,7 +497,6 @@ class InterleaveInferencer:
                     cfg_img_start,
                     think
                 )
-
                 # gen_context_tr["past_key_values"].value_cache = gen_context["past_key_values"].value_cache
                 # cfg_text_context_tr["past_key_values"].value_cache = cfg_text_context["past_key_values"].value_cache
                 # cfg_img_context_tr["past_key_values"].value_cache = cfg_img_context["past_key_values"].value_cache
