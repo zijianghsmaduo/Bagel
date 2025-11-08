@@ -45,6 +45,8 @@ from modeling.basic.util import (
 	MLPArgs
 )
 
+from modeling.basic.mlp import ReuseMLP
+
 from modeling.basic import KVCacheStructure, OctopusKVCache, WomanKVCache
 
 torch._dynamo.config.cache_size_limit = 512
@@ -744,8 +746,13 @@ class Qwen2MoTDecoderLayer(nn.Module):
 				self.self_attn = attn_module(config, layer_idx, trick_attn=trick_attn)
 				self.mlp_args = mlp_args
 
-				self.mlp = Qwen2MLP(config)
-				self.mlp_moe_gen = Qwen2MLP(config)
+				if mlp_args.use_custom_mlp:
+					self.mlp = ReuseMLP(config)
+					self.mlp_moe_gen = ReuseMLP(config)
+				else:
+					self.mlp = Qwen2MLP(config)
+					self.mlp_moe_gen = Qwen2MLP(config)
+
 				self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 				self.input_layernorm_moe_gen = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 				self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -899,8 +906,12 @@ class Qwen2MoTDecoderLayer(nn.Module):
 										cfg_type=cfg_type,
 									)
 
-								packed_query_sequence_[packed_text_indexes] = self.mlp(packed_text_query_sequence)
-								packed_query_sequence_[packed_vae_token_indexes] = self.mlp_moe_gen(packed_vae_query_sequence)
+								if self.mlp_args.use_custom_mlp:
+									packed_query_sequence_[packed_text_indexes] = self.mlp(packed_text_query_sequence, sparsity=self.mlp_args.sparsity, cfg_type=cfg_type, layer_idx=layer_idx, timestep=timestep)
+									packed_query_sequence_[packed_vae_token_indexes] = self.mlp_moe_gen(packed_vae_query_sequence, sparsity=self.mlp_args.mot_sparsity, cfg_type=cfg_type, layer_idx=layer_idx, timestep=timestep)
+								else:
+									packed_query_sequence_[packed_text_indexes] = self.mlp(packed_text_query_sequence)
+									packed_query_sequence_[packed_vae_token_indexes] = self.mlp_moe_gen(packed_vae_query_sequence)
 								packed_query_sequence = packed_query_sequence_
 
 								if self.mlp_args.save_mlp == "mlp_before_res":

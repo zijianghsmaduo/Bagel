@@ -29,6 +29,8 @@ from transformers.utils import (
 )
 from .configuration_qwen2 import Qwen2Config
 
+from modeling.basic.util import save_swift
+
 
 if is_flash_attn_2_available():
     from transformers.modeling_flash_attention_utils import _flash_attention_forward

@@ -33,6 +33,8 @@ def process_single_item(item, vie_score, vie_idx, max_retries=10000):
     
     src_image_path = save_path_fullset_source_image
     save_path_item = save_path_fullset_result_image
+
+    print(f"vie_idx: {vie_idx}")
     
     for retry in range(max_retries):
         try:
@@ -76,7 +78,7 @@ def process_single_item(item, vie_score, vie_idx, max_retries=10000):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--save_path", type=str, required=True)
-    parser.add_argument("--backbone", type=str, default="gemini", choices=["gemini", "gpt4o", "qwen25vl"])
+    parser.add_argument("--backbone", type=str, default="gemini", choices=["gemini", "gpt4o", "qwen25vl", "qwen25vl_api"])
     parser.add_argument("--api_keys", type=str, required=True, nargs='+', help="Google AI Studio API keys (file paths or direct keys)")
     parser.add_argument("--max_workers", type=int, default=1)
     args = parser.parse_args()

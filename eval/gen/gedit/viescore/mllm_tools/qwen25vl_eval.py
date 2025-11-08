@@ -38,6 +38,8 @@ def set_seed(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    
+
 
 class Qwen25VL():
     def __init__(self) -> None:     

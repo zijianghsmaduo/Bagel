@@ -175,7 +175,59 @@ class BlockSparsify:
 		assert(vae_vit_mask.size(0) == H and vae_vit_mask.size(1) == L and vae_vit_mask.size(2) == (vae_range[1] - vae_range[0] + vit_range[1] - vit_range[0]))
 		return vae_vit_mask, representative_attn_scores
 
-	def sparsify_kv_cache_threshold_vit_self_fine(
+	def sparsify_kv_cache_threshold_self_fine(
+		self,
+		q: torch.Tensor,
+		k: torch.Tensor,
+		self_range: torch.Tensor,
+	):
+		H, L, D = q.shape
+		_, N, _ = k.shape
+		group_size = self.group_size
+
+		pre_self_k = k[:, 0:self_range[0], :]
+		self_k = k[:, self_range[0]:self_range[1], :]
+		assert(self_range[1] == N)
+
+		pre_self_k_padded, pre_self_k_padded_len = self.padding(pre_self_k, group_size)
+		self_k_padded, self_k_padded_len = self.padding(self_k, group_size)
+
+		k_padded = torch.cat([pre_self_k_padded, self_k_padded], dim=1)
+		pre_self_padded_range = torch.tensor((
+			0, pre_self_k_padded.size(1)
+		), device=k.device, dtype=torch.long)
+		self_padded_range = torch.tensor((
+			pre_self_k_padded.size(1),
+			pre_self_k_padded.size(1) + self_k_padded.size(1) - self_k_padded_len
+		), device=k.device, dtype=torch.long)
+
+		q_padded, q_padded_len = self.padding(q, group_size)
+		num_groups_q = q_padded.size(1) // group_size
+		num_groups_k = k_padded.size(1) // group_size
+		q_padded = q_padded.view(H, num_groups_q, group_size, D)
+		k_padded = k_padded.view(H, num_groups_k, group_size, D)
+		representative_q = torch.zeros(H, num_groups_q, D, device=q.device, dtype=q.dtype)
+		representative_k = torch.zeros(H, num_groups_k, D, device=k.device, dtype=k.dtype)
+		if self.threshold_max:
+			representative_q = q_padded.max(dim=2).values  # (H, num_groups_q, D)
+			representative_k = k_padded.max(dim=2).values  # (H, num_groups_k, D)
+		else:
+			representative_q = q_padded.mean(dim=2)  # (H, num_groups_q, D)
+			representative_k = k_padded.mean(dim=2)  # (H, num_groups_k, D)
+		assert(representative_q.size(0) == H and representative_q.size(1) == num_groups_q and representative_q.size(2) == D)
+		assert(representative_k.size(0) == H and representative_k.size(1) == num_groups_k and representative_k.size(2) == D)
+		representative_attn_scores = torch.bmm(representative_q, representative_k.transpose(-2, -1) / math.sqrt(D))  # (H, num_groups_q, num_groups_k)
+		representative_attn_scores = torch.softmax(representative_attn_scores, dim=-1)
+		block_mask = representative_attn_scores < self.threshold
+		full_mask = torch.repeat_interleave(block_mask, repeats=group_size, dim=1)
+		full_mask = torch.repeat_interleave(full_mask, repeats=group_size, dim=2)
+		final_attn_mask = full_mask
+		
+		self_mask = final_attn_mask[:, 0:L, self_padded_range[0]:self_padded_range[1]]
+		assert(self_mask.size(0) == H and self_mask.size(1) == L and self_mask.size(2) == (self_range[1] - self_range[0]))
+		return self_mask, representative_attn_scores
+
+	def sparsify_kv_cache_threshold_vae_vit_self_fine(
 		self,
 		q: torch.Tensor,
 		k: torch.Tensor,
@@ -259,6 +311,7 @@ class BlockSparsify:
 		assert(self_mask.size(0) == H and self_mask.size(1) == L and self_mask.size(2) == (self_range[1] - self_range[0]))
 
 		return vae_mask, vit_mask, self_mask, representative_attn_scores
+	
 	def sparsify_kv_cache_topk(self, q: torch.Tensor, k: torch.Tensor, q_range: torch.Tensor, k_range: torch.Tensor) -> torch.Tensor:
 		"""
 		Args:

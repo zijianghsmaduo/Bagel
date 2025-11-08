@@ -64,6 +64,8 @@ if __name__ == "__main__":
 	parser.add_argument("--self_attn_sparse", action='store_true', help="Whether to apply sparsity to self-attention.")
 	parser.add_argument("--mlp_save", type=str, default=None, help="Whether to save MLP activations.")
 	parser.add_argument("--mlp_save_dir", type=str, default="maps/mlp_octupusy_flash", help="Directory to save MLP activations.")
+	parser.add_argument("--reorder_method", type=str, default="None", choices=["None", "front", "excavate"], help="Method to reorder gen image context.")
+	parser.add_argument("--use_custom_mlp", action='store_true', help="Whether to use custom MLP with CFG sparsity tracking.")
 	args = parser.parse_args()
 
 	attention_backend = args.attn_backend
@@ -81,6 +83,7 @@ if __name__ == "__main__":
 		)
 
 	mlp_args = MLPArgs(
+		use_custom_mlp=args.use_custom_mlp,
 		save_mlp=args.mlp_save,
 		save_dir=args.mlp_save_dir
 	)
@@ -183,7 +186,8 @@ if __name__ == "__main__":
 			tokenizer=tokenizer, 
 			vae_transform=vae_transform, 
 			vit_transform=vit_transform, 
-			new_token_ids=new_token_ids
+			new_token_ids=new_token_ids,
+			reorder_method=args.reorder_method,
 	)
 
 	def gen_inference(prompt, enable_taylorseer = False):
@@ -279,27 +283,8 @@ if __name__ == "__main__":
 		output_dict = inferencer(image=image, text=prompt, understanding_output=True, **inference_hyper)
 		print(output_dict['text'])
 
-	# if args.threshold is not None:
-	# 	print(f"Setting new attention probability threshold to {args.threshold}")
-	# 	set_new_threshold(args.threshold)
-
-	# if args.is_save:
-	# 	set_save(True)
-	# if args.save_dir:
-	# 	set_dump_dir(args.save_dir)
-	# if args.is_truncate:
-	# 	set_truncate(True)
-
-	# set_new_threshold(0.0)
-	# gen_inference("A female cosplayer portraying an ethereal fairy or elf, wearing a flowing dress made of delicate fabrics in soft, mystical colors like emerald green and silver. She has pointed ears, a gentle, enchanting expression, and her outfit is adorned with sparkling jewels and intricate patterns. The background is a magical forest with glowing plants, mystical creatures, and a serene atmosphere.")
-	# gen_inference_with_thinking("a car made of small cars")
-
 	# image1 = Image.open('test_images/women.jpg')
 	# editing_inference("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
-	image2 = Image.open('test_images/octupusy.jpg')
-	editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
-	# image1 = Image.open('test_images/women.jpg')
-	# editing_inference_with_thinking("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
 	image2 = Image.open('test_images/octupusy.jpg')
 	editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
 	# image1 = Image.open('test_images/women.jpg')
@@ -307,8 +292,8 @@ if __name__ == "__main__":
 
 	# image3 = Image.open('test_images/meme.jpg')
 	# understanding_inference("Can someone explain what’s funny about this meme??", image3)
-	# image3 = Image.open('test_images/car.png')
-	# understanding_inference("Give a description of this car.", image3)
+
+	inferencer.model.language_model.model
 
 	if base_attention is not None:
 		if args.is_truncate and args.is_save:
@@ -319,5 +304,50 @@ if __name__ == "__main__":
 			print(sparsity)
 		else:
 			sparsity = base_attention.get_sparsity()
-			print(f"Sparsity for VAE + ViT:\n" + str(np.mean(np.mean(sparsity[0], axis=0))))
-			print(f"Sparsity for Self-Attention:\n" + str(np.mean(np.mean(sparsity[1], axis=0))))
+			# --- 格式化输出 ---
+			print("\n" + "="*60)
+			print(" " * 15 + "Attention Sparsity Summary")
+			print("="*60)
+			
+			# 表头
+			print(f"{'Attention Type':<20} | {'Component':<20} | {'Average Sparsity':>15}")
+			print("-"*60)
+
+			# 循环处理每种类型
+			for cfg_type in ["normal", "cfg_text", "cfg_img"]:
+				if cfg_type in sparsity:
+					# 计算 VAE + ViT 的稀疏度
+					vae_vit_sparsity_list = np.array(sparsity[cfg_type][0])
+					if vae_vit_sparsity_list.size > 0: # 确保数组不为空
+						avg_vae_vit = np.mean(vae_vit_sparsity_list)
+						print(f"{cfg_type.replace('_', ' ').title():<20} | {'VAE + ViT':<20} | {avg_vae_vit:>14.4%}")
+					
+					# 计算 Self-Attention 的稀疏度
+					self_attn_sparsity_list = np.array(sparsity[cfg_type][1])
+					if self_attn_sparsity_list.size > 0: # 确保数组不为空
+						avg_self_attn = np.mean(self_attn_sparsity_list)
+						print(f"{'':<20} | {'Self-Attention':<20} | {avg_self_attn:>14.4%}")
+					
+					print("-"*60)
+
+	if args.use_custom_mlp:
+		sparsity = mlp_args.mot_sparsity
+		# --- 格式化输出 ---
+		print("\n" + "="*60)
+		print(" " * 15 + "MLP Sparsity Summary")
+		print("="*60)
+		
+		# 表头
+		print(f"{'CFG Type':<20} | {'Component':<20} | {'Average Sparsity':>15}")
+		print("-"*60)
+
+		# 循环处理每种类型
+		for cfg_type in ["cfg_text", "cfg_img"]:
+			if cfg_type in sparsity:
+				# 计算 MLP 的稀疏度
+				mlp_sparsity_list = np.array(sparsity[cfg_type])
+				if mlp_sparsity_list.size > 0: # 确保数组不为空
+					avg_mlp = np.mean(mlp_sparsity_list)
+					print(f"{cfg_type.replace('_', ' ').title():<20} | {'MLP':<20} | {avg_mlp:>14.4%}")
+				
+				print("-"*60)

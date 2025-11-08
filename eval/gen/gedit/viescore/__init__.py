@@ -16,7 +16,7 @@ class VIEScore:
             raise ValueError("task must be either 't2i' or 'tie'")
 
         if self.backbone_name == "gpt4o":
-            from mllm_tools.openai import GPT4o
+            from eval.gen.gedit.viescore.mllm_tools.openai_gpt4 import GPT4o
             self.model = GPT4o(key_path, model_name="gpt-4.1-2025-04-14", azure_endpoint=azure_endpoint)
         elif self.backbone_name == "qwen25vl":
             from mllm_tools.qwen25vl_eval import Qwen25VL
@@ -24,6 +24,9 @@ class VIEScore:
         elif self.backbone_name == "gemini":
             from mllm_tools.gemini import Gemini
             self.model = Gemini(key_path, are_images_encoded=False, model_name="gemini-2.5-flash")
+        elif self.backbone_name == "qwen25vl_api":
+            from mllm_tools.qwen25vl_api import Qwen25VLAPI
+            self.model = Qwen25VLAPI(key_path, are_images_encoded=False)
         else:
             raise NotImplementedError("backbone not supported")
         self.context = vie_prompts._context_no_delimit
@@ -40,7 +43,7 @@ class VIEScore:
     def evaluate(self, image_prompts, text_prompt, extract_overall_score_only=False, extract_all_score=True, echo_output=False):
         if not isinstance(image_prompts, list):
             image_prompts = [image_prompts]
-        if self.backbone_name in ['gpt4o', 'gpt4v']:
+        if self.backbone_name in ['gpt4o', 'gpt4v', 'qwen25vl_api']:
             self.model.use_encode = False if isinstance(image_prompts[0], str) else True
             #print("Using encode:", self.model.use_encode)
         elif self.backbone_name == 'gemini':

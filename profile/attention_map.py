@@ -930,7 +930,6 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
       norm_to_use = Normalize(vmin=vmin, vmax=vmax)
       print(f"vmin: {vmin}, vmax: {vmax}")
       kv_plot(similarity_cfg_text, ax=axes_flat[0], title=f"{mode} similarity with CFG text\n{percentage_of_high_similarity_text:.2%}" + (f" below {mse_threshold}" if 'mse' in mode else f" above {cosine_threshold}"),
-      kv_plot(similarity_cfg_text, ax=axes_flat[0], title=f"{mode} similarity with CFG text\n{percentage_of_high_similarity_text:.2%}" + (f" below {mse_threshold}" if 'mse' in mode else f" above {cosine_threshold}"),
                          vmin=vmin, vmax=vmax, 
                          norm=norm_to_use,      # 传入统一的 norm 对象
                          cmap=cmap_to_use, 

@@ -22,14 +22,16 @@ The planning process is enclosed within <think> </think> tags, i.e. <think> plan
 
 
 class InterleaveInferencer:
-    def __init__(self, model, vae_model, tokenizer, vae_transform, vit_transform, new_token_ids):
+    def __init__(self, model, vae_model, tokenizer, vae_transform, vit_transform, new_token_ids, reorder_method="None"):
         self.model = model
         self.vae_model = vae_model
         self.tokenizer = tokenizer
         self.vae_transform = vae_transform
         self.vit_transform = vit_transform
         self.new_token_ids = new_token_ids
-        
+        self.reorder_method = reorder_method
+        print(f"InterleaveInferencer initialized with reorder_method: {self.reorder_method}")
+
     def init_gen_context(self): 
         gen_context = {
             'kv_lens': [0],
@@ -238,6 +240,8 @@ class InterleaveInferencer:
         cfg_text_context['ropes'] = [cfg_text_start]
         cfg_img_context['ropes'] = [cfg_img_start]
 
+        kv_struct = KVCacheStructure()
+
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             if think:
                 # if understanding_output:
@@ -259,9 +263,9 @@ class InterleaveInferencer:
                 elif isinstance(input_term, Image.Image):
                     input_term = self.vae_transform.resize_transform(pil_img2rgb(input_term))
                     print("VAE input image size:", input_term.size)
-                    gen_context = self.update_context_image(input_term, gen_context, vae=True)
+                    gen_context = self.update_context_image(input_term, gen_context, kv_struct=kv_struct, vae=True)
                     print(f"After adding input image, kv_lens: {gen_context['kv_lens']}")
-                    cfg_text_context = self.update_context_image(input_term, cfg_text_context, vae=True)
+                    cfg_text_context = self.update_context_image(input_term, cfg_text_context, kv_struct=kv_struct, vae=True)
                     # cfg_text_context = deepcopy(gen_context)
 
                 else:
@@ -276,9 +280,6 @@ class InterleaveInferencer:
         self,
         input_lists: List[Union[str, Image.Image]],
         gen_text,
-        normal_start,
-        cfg_text_start,
-        cfg_img_start,
         think
     ):
         gen_context = self.init_gen_context()
@@ -288,6 +289,7 @@ class InterleaveInferencer:
         gen_context['ropes'] = [0]
         cfg_text_context['ropes'] = [0]
         cfg_img_context['ropes'] = [0]
+        kv_struct = KVCacheStructure()
 
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             if think:
@@ -310,9 +312,9 @@ class InterleaveInferencer:
                 elif isinstance(input_term, Image.Image):
                     input_term = self.vae_transform.resize_transform(pil_img2rgb(input_term))
                     print("VAE input image size:", input_term.size)
-                    gen_context = self.update_context_image(input_term, gen_context, vae=True)
+                    gen_context = self.update_context_image(input_term, gen_context, kv_struct=kv_struct, vae=True)
                     print(f"After adding input image, kv_lens: {gen_context['kv_lens']}")
-                    cfg_text_context = self.update_context_image(input_term, cfg_text_context, vae=True)
+                    cfg_text_context = self.update_context_image(input_term, cfg_text_context, kv_struct=kv_struct, vae=True)
                     # cfg_text_context = deepcopy(gen_context)
 
                 else:
@@ -330,9 +332,6 @@ class InterleaveInferencer:
         self,
         input_lists: List[Union[str, Image.Image]],
         gen_text,
-        normal_start,
-        cfg_text_start,
-        cfg_img_start,
         think
     ):
         gen_context = self.init_gen_context()
@@ -342,6 +341,8 @@ class InterleaveInferencer:
         gen_context['ropes'] = [1]
         cfg_text_context['ropes'] = [1]
         cfg_img_context['ropes'] = [1]
+
+        kv_struct = KVCacheStructure()
 
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             if think:
@@ -364,9 +365,9 @@ class InterleaveInferencer:
                 elif isinstance(input_term, Image.Image):
                     input_term = self.vae_transform.resize_transform(pil_img2rgb(input_term))
                     print("VAE input image size:", input_term.size)
-                    gen_context = self.update_context_image(input_term, gen_context, vae=True)
+                    gen_context = self.update_context_image(input_term, gen_context, kv_struct=kv_struct, vae=True)
                     print(f"After adding input image, kv_lens: {gen_context['kv_lens']}")
-                    cfg_text_context = self.update_context_image(input_term, cfg_text_context, vae=True)
+                    cfg_text_context = self.update_context_image(input_term, cfg_text_context, kv_struct=kv_struct, vae=True)
                     # cfg_text_context = deepcopy(gen_context)
 
                 else:
@@ -467,6 +468,22 @@ class InterleaveInferencer:
 
                 kv_struct.calculate_gen_image()
                 kv_struct.print_structure()
+
+                if self.reorder_method != "None":
+                    if self.reorder_method == "front":
+                        gen_context, cfg_text_context, cfg_img_context = self.gen_image_context_fronting(
+                            input_lists=input_lists,
+                            gen_text=gen_text,
+                            think=think,
+                        )
+                    elif self.reorder_method == "excavate":
+                        gen_context, cfg_text_context, cfg_img_context = self.gen_image_context_excavate(
+                            input_lists=input_lists,
+                            gen_text=gen_text,
+                            think=think,
+                        )
+                    else:
+                        raise ValueError(f"Unsupported reorder method: {self.reorder_method}")
 
                 img = self.gen_image(
                     image_shapes, 

@@ -30,6 +30,8 @@ from modeling.autoencoder import load_ae
 from accelerate import infer_auto_device_map, load_checkpoint_and_dispatch, init_empty_weights
 
 from modeling.basic import KVCacheStructure
+from modeling.basic.cfg import ReorderRopeContext
+from modeling.basic.util import MLPArgs
 
 
 
@@ -41,7 +43,7 @@ def move_generation_input_to_device(generation_input, device):
 		return generation_input
 
 
-def setup_models(model_path, base_attn: TrickAttention, device=0):
+def setup_models(model_path, base_attn: TrickAttention, mlp_args: MLPArgs, device=0):
 		"""
 		Set up and load all required models.
 		
@@ -86,7 +88,7 @@ def setup_models(model_path, base_attn: TrickAttention, device=0):
 
 		# Create fusion model
 		with init_empty_weights():
-			language_model = Qwen2ForCausalLM(llm_config, trick_attn=base_attn)
+			language_model = Qwen2ForCausalLM(llm_config, mlp_args=mlp_args, trick_attn=base_attn)
 			vit_model      = SiglipVisionModel(vit_config)
 			model          = Bagel(language_model, vit_model, config)
 			model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config)
@@ -167,7 +169,8 @@ def editing_with_text_img_cfg(
 		use_vit=False,
 		use_think=False,
 		# output_size=(576, 1024)  # Default size, can be changed
-		device='cuda'
+		device='cuda',
+		reorder_method="front",
 ):
 		"""
 		Edit an image based on text instructions using NAVIT model.
@@ -197,7 +200,12 @@ def editing_with_text_img_cfg(
 		Returns:
 				PIL.Image: Edited image
 		"""
-		
+
+		CFG_REORDER = False
+		if reorder_method in ["front", "excavate"]:
+			CFG_REORDER = True
+			print("Using CFG reorder method:", reorder_method)
+
 		def _make_divisible(value, stride):
 				"""Ensure the value is divisible by the stride."""
 				return max(stride, int(round(value / stride) * stride))
@@ -303,7 +311,7 @@ The planning process is enclosed within <think> </think> tags, i.e. <think> plan
 				generation_input = move_generation_input_to_device(generation_input, device)
 				past_key_values = model.forward_cache_update_text(past_key_values, **generation_input)  
 		
-		
+		think_output = ""
 		if use_think: 
 				with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16):
 						tmp_generation_input = model.prepare_start_tokens(newlens, new_rope, new_token_ids)
@@ -332,14 +340,6 @@ The planning process is enclosed within <think> </think> tags, i.e. <think> plan
 				with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16):
 						generation_input = move_generation_input_to_device(generation_input, device)
 						past_key_values = model.forward_cache_update_text(past_key_values, **generation_input)  
-				
-		# Prepare VAE latent for main branch
-		generation_input = model.prepare_vae_latent(
-				curr_kvlens=newlens,
-				curr_rope=new_rope,  
-				image_sizes=[(h, w)], 
-				new_token_ids=new_token_ids,
-		)        
 
 		# Setup for image CFG
 		cfg_img_past_key_values = NaiveCache(model.config.llm_config.num_hidden_layers)
@@ -371,6 +371,32 @@ The planning process is enclosed within <think> </think> tags, i.e. <think> plan
 				image_sizes=[(h, w)], 
 		)
 
+		# Prepare VAE latent for main branch
+		generation_input = model.prepare_vae_latent(
+				curr_kvlens=newlens,
+				curr_rope=new_rope,  
+				image_sizes=[(h, w)], 
+				new_token_ids=new_token_ids,
+		)   
+
+		if CFG_REORDER:
+			input_lists = [image, prompt]
+			reorder = ReorderRopeContext(
+				method=reorder_method,
+				model=model,
+				vae_model=vae_model,
+				tokenizer=tokenizer,
+				new_token_ids=new_token_ids,
+				vae_transform=vae_transform,
+				vit_transform=vit_transform,
+			)
+			generation_input, past_key_values, generation_input_cfg_text, cfg_text_past_key_values, generation_input_cfg_img, cfg_img_past_key_values = reorder.forward_reorder(
+				system_prompt=SYSTEM_PROMPT if use_think else "",
+				input_lists=input_lists,
+				gen_text=think_output if use_think else "",
+				kv_struct=kv_struct,
+				think=use_think,
+			)
 
 		# Extract packed positions and indexes for CFGs
 		cfg_text_args = {
@@ -454,7 +480,7 @@ def process_dataset(
 		model, vae_model, tokenizer, new_token_ids, vae_transform, vit_transform,
 		output_dir, cfg_text_scale=4.0, cfg_img_scale=1.5, 
 		cfg_type="serial_text_img", num_samples=None, shard_id=0, total_shards=1, use_think=False, device='cuda',
-		eval_num=1,
+		eval_num=1, reorder_method="front",
 ):
 		"""
 		Process images from the dataset using the editing model.
@@ -463,7 +489,7 @@ def process_dataset(
 
 		dataset = load_dataset("stepfun-ai/GEdit-Bench")['train']
 		idx_list = list(range(len(dataset)))
-		
+
 		idx_list = shuffle_half_list(idx_list, seed=42 + shard_id)
 
 		idx_list = idx_list[shard_id::total_shards]
@@ -517,6 +543,7 @@ def process_dataset(
 										use_vit=True,
 										use_think=use_think,
 										device=device,
+										reorder_method=reorder_method,
 								)
 
 						input_image.save(save_path_fullset_source_image)
@@ -560,24 +587,37 @@ def main():
 												help="Whether to apply sparsity to VAE and ViT attention.")
 		parser.add_argument("--self_attn_sparse", action='store_true', 
 												help="Whether to apply sparsity to self-attention.")
+		parser.add_argument("--reorder_method", type=str, default="front", 
+												help="Method for reordering rope context.")
+		parser.add_argument("--save_dir", type=str, default=None, 
+												help="Directory to save attention probabilities.")
+		parser.add_argument("--mlp_save", type=str, default=None, help="Whether to save MLP activations.")
+		parser.add_argument("--mlp_save_dir", type=str, default="maps/mlp_octupusy_flash", help="Directory to save MLP activations.")
 
 		args = parser.parse_args()
 
 		attention_backend = args.attn_backend
-		base_attention = TrickAttention(
-			attention_backend=attention_backend,
-			sparse_gsize=args.sparse_gsize, sparse_topk=0.2, sparse_threshold=args.threshold if args.threshold is not None else 4e-5,
-			quant_gsize=32,
-			posterior_truncate_threshold=args.threshold if args.threshold is not None else 4e-5,
-			save_dir=args.save_dir if args.save_dir else "attn_probs_qkv_dump_tmp",
-			is_save=False, is_plot=False, is_truncate=False,
-			plot_dir="plot/sparse_attention_scores", heads_to_plot=[0, 1, 2],
-			vae_vit=args.vae_vit_sparse, self_attn=args.self_attn_sparse
+		base_attention = None
+		if attention_backend != "flash":
+			base_attention = TrickAttention(
+				attention_backend=attention_backend,
+				sparse_gsize=args.sparse_gsize, sparse_topk=0.2, sparse_threshold=args.threshold if args.threshold is not None else 4e-5,
+				quant_gsize=32,
+				posterior_truncate_threshold=args.threshold if args.threshold is not None else 4e-5,
+				save_dir=args.save_dir if args.save_dir else "attn_probs_qkv_dump_tmp",
+				is_save=False, is_plot=False, is_truncate=False,
+				plot_dir="plot/sparse_attention_scores", heads_to_plot=[0, 1, 2],
+				vae_vit=args.vae_vit_sparse, self_attn=args.self_attn_sparse
+			)
+
+		mlp_args = MLPArgs(
+			save_mlp=args.mlp_save,
+			save_dir=args.mlp_save_dir
 		)
 		
 		# Setup models
 		model, vae_model, tokenizer, new_token_ids, vae_transform, vit_transform = setup_models(
-				args.model_path, base_attention, args.device
+				model_path=args.model_path, base_attn=base_attention, device=args.device, mlp_args=mlp_args
 		)
 		
 		# Process dataset
@@ -593,6 +633,7 @@ def main():
 				use_think=args.use_think,
 				device=args.device,
 				eval_num=args.eval_num,
+				reorder_method=args.reorder_method,
 		)
 
 

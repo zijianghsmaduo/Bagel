@@ -68,7 +68,7 @@ def process_single_item(item, vie_score, max_retries=10000):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--save_path", type=str, required=True)
-    parser.add_argument("--backbone", type=str, default="gpt4o", choices=["gpt4o", "qwen25vl"])
+    parser.add_argument("--backbone", type=str, default="gpt4o", choices=["gpt4o", "qwen25vl", "gemini", "qwen25vl_api"])
     parser.add_argument("--gpt_keys", type=str, required=True, nargs='+')
     parser.add_argument("--azure_endpoint", type=str, required=True)
     parser.add_argument("--max_workers", type=int, default=30)

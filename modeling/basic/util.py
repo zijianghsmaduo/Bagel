@@ -1,6 +1,13 @@
 import os
 import torch
 from typing import Optional
+from enum import Enum
+import numpy as np
+
+class CfgType(Enum):
+	NORMAL = "normal"
+	CFG_TEXT = "cfg_text"
+	CFG_IMAGE = "cfg_img"
 
 def compute_coverage(ref: torch.Tensor, pred: torch.Tensor) -> float:
 		"""Compute coverage metric between reference and predicted attention masks.
@@ -39,11 +46,34 @@ def save_map(is_save: bool, save_dir: str, map: torch.Tensor, mode: str,
 	if not os.path.exists(save_path):
 		torch.save([entry_to_save], save_path)
 
+def save_swift(is_save: bool, save_dir: str, name: str, data: torch.Tensor):
+	if not is_save:
+		return
+	os.makedirs(save_dir, exist_ok=True)
+	save_path = os.path.join(save_dir, f"{name}.pt")
+	if not os.path.exists(save_path):
+		torch.save(data.cpu(), save_path)
+
 class MLPArgs:
 	def __init__(
 		self,
+		use_custom_mlp: bool = False,
 		save_mlp: Optional[str]= None,
 		save_dir: Optional[str]= None,
 	):
+		if use_custom_mlp:
+			print("Using custom MLP with CFG sparsity tracking.")
+		
+		self.use_custom_mlp = use_custom_mlp
 		self.save_mlp = save_mlp
 		self.save_dir = save_dir
+
+		self.sparsity = {
+			"cfg_text": np.zeros((49 ,28), dtype=np.float32),
+			"cfg_img": np.zeros((49, 28), dtype=np.float32)
+		}
+
+		self.mot_sparsity = {
+			"cfg_text": np.zeros((49 ,28), dtype=np.float32),
+			"cfg_img": np.zeros((49, 28), dtype=np.float32)
+		}
