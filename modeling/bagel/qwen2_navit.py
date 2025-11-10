@@ -747,8 +747,8 @@ class Qwen2MoTDecoderLayer(nn.Module):
 				self.mlp_args = mlp_args
 
 				if mlp_args.use_custom_mlp:
-					self.mlp = ReuseMLP(config)
-					self.mlp_moe_gen = ReuseMLP(config)
+					self.mlp = ReuseMLP(config, use_quantized_w=mlp_args.use_quantized_w, use_similarity=mlp_args.use_similarity)
+					self.mlp_moe_gen = ReuseMLP(config, use_quantized_w=mlp_args.use_quantized_w, use_similarity=mlp_args.use_similarity)
 				else:
 					self.mlp = Qwen2MLP(config)
 					self.mlp_moe_gen = Qwen2MLP(config)
@@ -871,7 +871,11 @@ class Qwen2MoTDecoderLayer(nn.Module):
 						residual = packed_query_sequence
 						if mode == "und":
 								packed_query_sequence = self.post_attention_layernorm(packed_query_sequence)
-								packed_query_sequence = self.mlp(packed_query_sequence)
+								if self.mlp_args.use_custom_mlp:
+									use_quantized_w = self.mlp_args.use_quantized_w and timestep is not None and timestep >= 0
+									packed_query_sequence = self.mlp(packed_query_sequence, sparsity=self.mlp_args.sparsity, cfg_type=cfg_type, layer_idx=layer_idx, timestep=timestep, use_quantized_w=use_quantized_w)
+								else:
+									packed_query_sequence = self.mlp(packed_query_sequence)
 						elif mode == "gen":
 								if self.mlp_args.save_mlp == "mlp_before_norm":
 									assert self.mlp_args.save_dir is not None

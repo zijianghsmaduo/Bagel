@@ -66,6 +66,8 @@ if __name__ == "__main__":
 	parser.add_argument("--mlp_save_dir", type=str, default="maps/mlp_octupusy_flash", help="Directory to save MLP activations.")
 	parser.add_argument("--reorder_method", type=str, default="None", choices=["None", "front", "excavate"], help="Method to reorder gen image context.")
 	parser.add_argument("--use_custom_mlp", action='store_true', help="Whether to use custom MLP with CFG sparsity tracking.")
+	parser.add_argument("--quantized_mlp_w", action='store_true', help="Whether to use quantized weights for text generation in custom MLP.")
+	parser.add_argument("--mlp_use_similarity", action='store_true', help="Whether to use similarity in custom MLP.")
 	args = parser.parse_args()
 
 	attention_backend = args.attn_backend
@@ -84,6 +86,8 @@ if __name__ == "__main__":
 
 	mlp_args = MLPArgs(
 		use_custom_mlp=args.use_custom_mlp,
+		use_quantized_w=args.quantized_mlp_w,
+		use_similarity=args.mlp_use_similarity,
 		save_mlp=args.mlp_save,
 		save_dir=args.mlp_save_dir
 	)

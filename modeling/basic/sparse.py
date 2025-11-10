@@ -510,6 +510,14 @@ class BlockQuantize:
 		signal_power_val = float(signal_power.item()) if isinstance(signal_power, torch.Tensor) and signal_power.numel() == 1 else float(signal_power)
 		snr_val = 10.0 * math.log10(signal_power_val / noise_power_val)
 		return snr_val
+	
+	def forward(self, x: torch.Tensor, x_mask: Optional[torch.Tensor] = None, mode: str = 'nvfp4') -> Tuple[torch.Tensor, torch.Tensor]:
+		if mode == 'nvfp4':
+			return self.quantize_nvfp4(x, x_mask)
+		elif mode == 'int4':
+			return self.quantize_int4(x, x_mask)
+		else:
+			raise ValueError(f"Unsupported quantization mode: {mode}")
 
 # class SparsityOperations:
 # 	def __init__(self, mode: str = 'seqlen'):

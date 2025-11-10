@@ -58,6 +58,8 @@ class MLPArgs:
 	def __init__(
 		self,
 		use_custom_mlp: bool = False,
+		use_quantized_w: bool = False,
+		use_similarity: bool = False,
 		save_mlp: Optional[str]= None,
 		save_dir: Optional[str]= None,
 	):
@@ -65,6 +67,8 @@ class MLPArgs:
 			print("Using custom MLP with CFG sparsity tracking.")
 		
 		self.use_custom_mlp = use_custom_mlp
+		self.use_quantized_w = use_quantized_w
+		self.use_similarity = use_similarity
 		self.save_mlp = save_mlp
 		self.save_dir = save_dir
 

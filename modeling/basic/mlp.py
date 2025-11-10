@@ -9,6 +9,8 @@ from modeling.qwen2.modeling_qwen2 import (
 		apply_rotary_pos_emb,
 )
 
+from modeling.basic.sparse import BlockQuantize
+
 import numpy as np
 
 def calculate_and_print_error(
@@ -102,7 +104,7 @@ class TilingDownLinear:
 
 
 class ReuseMLP(Qwen2MLP):
-	def __init__(self, config):
+	def __init__(self, config, use_quantized_w: bool = False, use_similarity: bool = False):
 		super().__init__(config)
 		self.tiling_up_proj = TilingUpLinear()
 		self.tiling_gate_proj = TilingUpLinear()
@@ -117,6 +119,44 @@ class ReuseMLP(Qwen2MLP):
 		self.cos_threshold = 0.99
 		self.rtol = 1e-2
 		self.atol = 1e-3
+		
+		self.use_quantized_w = use_quantized_w
+		self.use_similarity = use_similarity
+
+		self.quantizer = BlockQuantize(group_size=32)
+		self.quant_type = "nvfp4"
+
+		self.gate_proj_q = None
+		self.gate_proj_s = None
+		self.up_proj_q = None
+		self.up_proj_s = None
+		self.down_proj_q = None
+		self.down_proj_s = None
+		
+	@staticmethod
+	def quantize_up_weight(weight: torch.Tensor, quantizer: BlockQuantize, nr_head: int, quant_type: str) -> Tuple[torch.Tensor, torch.Tensor]:
+		I, D = weight.shape
+		H = nr_head
+		d = D // H
+		weight_reshaped = weight.view(I, H, d)
+		weight_reshaped = weight_reshaped.permute(1, 0, 2).contiguous()  # (H, I, d)
+		quant, scale = quantizer.forward(weight_reshaped, mode=quant_type)
+		# quant = weight_reshaped
+		# scale = torch.ones_like(quant)
+		quant = quant.permute(1, 0, 2).contiguous()
+		return quant.reshape(I, D), scale
+
+	@staticmethod
+	def quantize_down_weight(weight: torch.Tensor, quantizer: BlockQuantize, nr_head: int, quant_type: str) -> Tuple[torch.Tensor, torch.Tensor]:
+		D, I = weight.shape
+		H = nr_head
+		d = D // H
+		weight_reshaped = weight.view(H, d, I).contiguous()  # (H, d, I)
+		quant, scale = quantizer.forward(weight_reshaped, mode=quant_type)
+		# quant = weight_reshaped
+		# scale = torch.ones_like(quant)
+		# quant = quant.permute(1, 0, 2).contiguous()
+		return quant.reshape(D, I), scale
 
 	def compute_cosine_similarity(self, tensor_a: torch.Tensor, tensor_b: torch.Tensor) -> torch.Tensor:
 		assert tensor_a.shape == tensor_b.shape, "Input tensors must have the same shape."
@@ -143,9 +183,30 @@ class ReuseMLP(Qwen2MLP):
 		similarity_mask = cosine_sim > self.cos_threshold  # (H, N)
 		return similarity_mask
 
-	def forward(self, hidden_state: torch.Tensor, *, sparsity: Optional[np.ndarray] = None, cfg_type: Optional[str] = None, layer_idx: Optional[int] = None, timestep: Optional[int] = None) -> torch.Tensor:
-		if cfg_type is None:
-			return super().forward(hidden_state)
+	def forward(self, hidden_state: torch.Tensor, *, use_quantized_w: bool = False, sparsity: Optional[np.ndarray] = None, cfg_type: Optional[str] = None, layer_idx: Optional[int] = None, timestep: Optional[int] = None) -> torch.Tensor:
+		if cfg_type is None or self.use_similarity is False:
+			if use_quantized_w and self.use_quantized_w:
+				if self.gate_proj_q is None:
+					# print(f"--- Performing JIT quantization for ReuseMLP on device: {self.gate_proj.weight.device} ---")
+					self.gate_proj_q, self.gate_proj_s = self.quantize_up_weight(self.gate_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
+					self.up_proj_q, self.up_proj_s = self.quantize_up_weight(self.up_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
+					self.down_proj_q, self.down_proj_s = self.quantize_down_weight(self.down_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
+
+					# self.gate_proj_q = self.gate_proj.weight
+					# self.up_proj_q = self.up_proj.weight
+					# self.down_proj_q = self.down_proj.weight
+					# print("--- JIT Quantization complete and original weights deleted. ---")
+				assert self.gate_proj_q is not None, "Quantized gate projection weights are not initialized."
+				assert self.up_proj_q is not None, "Quantized up projection weights are not initialized."
+				assert self.down_proj_q is not None, "Quantized down projection weights are not initialized."
+
+				print(111)
+				gated_o = torch.nn.functional.linear(hidden_state, self.gate_proj_q)
+				up_o = torch.nn.functional.linear(hidden_state, self.up_proj_q)
+				gated_value = self.act_fn(gated_o) * up_o
+				return torch.nn.functional.linear(gated_value, self.down_proj_q)
+			else:
+				return super().forward(hidden_state)
 		elif cfg_type == "normal":
 			self.normal_act_cache = hidden_state
 
