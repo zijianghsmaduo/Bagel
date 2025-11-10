@@ -1,5 +1,9 @@
-# Copyright 2025 Bytedance Ltd. and/or its affiliates.
-# SPDX-License-Identifier: Apache-2.0
+## ---------------------- Arguments ----------------------
+## 1. OUTPUT_DIR
+## 2. THRESHOLD
+## 3. GROUP_SIZE
+## 4. METRICS_JSON_PATH
+
 
 # Clean up function
 cleanup() {
@@ -10,50 +14,43 @@ cleanup() {
 
     exit 1
 }
-
 # Set up the trap which will trigger our cleanup function
 trap cleanup SIGINT SIGTERM
 
-# run this script at the root of the project folder
-pip install httpx==0.23.0
-pip install openai==1.87.0
-pip install datasets
-pip install megfile
-
 export PYTHONPATH=.
-# export CUDA_VISIBLE_DEVICES=6,7
 
 N_GPU=4  # Number of GPU used in for the evaluation
-N_EVAL=-1  # Number of images to be evaluated
 DEVICE_BASE=0
+N_EVAL=-1  # Number of images to be evaluated
 MODEL_PATH="./models/BAGEL-7B-MoT"
-OUTPUT_DIR="/share/liujun/xinhaolee/workspace/mllms/Bagel/outputs/gedit_results"
-timestamp=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR=$OUTPUT_DIR\_$timestamp
+
+OUTPUT_DIR=${1:-"/share/liujun/xinhaolee/workspace/mllms/Bagel/outputs/gedit_results_grid"}
+THRESHOLD=${2:-"4e-5"}
+GROUP_SIZE=${3:-"10"}
+
+# 注意：METRICS_JSON_PATH 依赖于 THRESHOLD 和 GROUP_SIZE，所以它必须在它们之后定义
+METRICS_JSON_PATH=${4:-"$OUTPUT_DIR/metrics_threshold_${THRESHOLD}_group_size_${GROUP_SIZE}.json"}
+
+# OUTPUT_DIR=$OUTPUT_DIR\_$THRESHOLD\_$GROUP_SIZE
 GEN_DIR="$OUTPUT_DIR/gen_image"
 LOG_DIR="$OUTPUT_DIR/logs"
+
 EVAL_BACKBONE="qwen25vl_api"
 KEYS_FILE="./qwen_key.txt"
 
 mapfile -t API_KEYS < $KEYS_FILE
 
-N_GPT_PARALLEL=4q
+N_GPT_PARALLEL=5
 
-threshold=4e-5
-save_dir="maps/gedit_maps"
+threshold=$THRESHOLD
+sparse_gsize=$GROUP_SIZE
+
 attn_backend="naive_sparse_quant_cfg"
-# attn_backend="flash"
-sparse_gsize=10
 vae_vit_sparse=--vae_vit_sparse
 self_attn_sparse=--self_attn_sparse
-
-# mlp_save=--mlp_save "mlp"
-# mlp_save_dir=--mlp_save_dir "maps/mlp_octupusy_flash_tmp"
-
-# reorder_method="front"
-reorder_method="None"
-
 # use_custom_mlp=--use_custom_mlp
+reorder_method="None"
+save_dir="maps/gedit_maps"
 
 mkdir -p "$OUTPUT_DIR"
 mkdir -p "$GEN_DIR"
@@ -108,7 +105,8 @@ echo "Evaluation Done"
 python calculate_statistics.py \
 	--save_path "$OUTPUT_DIR"  \
 	--language en \
-	--backbone "$EVAL_BACKBONE"
+	--backbone "$EVAL_BACKBONE" \
+	--output_json_path "$METRICS_JSON_PATH"
 wait
 echo "Results Printed"
 

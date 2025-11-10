@@ -77,3 +77,14 @@ class MLPArgs:
 			"cfg_text": np.zeros((49 ,28), dtype=np.float32),
 			"cfg_img": np.zeros((49, 28), dtype=np.float32)
 		}
+
+	def clear_sparsity(self):
+		self.sparsity = {
+			"cfg_text": np.zeros((49 ,28), dtype=np.float32),
+			"cfg_img": np.zeros((49, 28), dtype=np.float32)
+		}
+
+		self.mot_sparsity = {
+			"cfg_text": np.zeros((49 ,28), dtype=np.float32),
+			"cfg_img": np.zeros((49, 28), dtype=np.float32)
+		}

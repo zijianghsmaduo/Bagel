@@ -33,6 +33,8 @@ from modeling.basic import KVCacheStructure
 from modeling.basic.cfg import ReorderRopeContext
 from modeling.basic.util import MLPArgs
 
+from typing import Optional
+
 
 
 def move_generation_input_to_device(generation_input, device):
@@ -413,7 +415,7 @@ The planning process is enclosed within <think> </think> tags, i.e. <think> plan
 				'cfg_img_packed_key_value_indexes': generation_input_cfg_img['cfg_packed_key_value_indexes'],
 		}
 
-		kv_struct.calculate_gen_image()
+		kv_struct.calculate_gen_image(cfg_img_use_thinking=True)
 		kv_struct.print_structure()
 
 		# Generate final image with mixed CFG
@@ -469,28 +471,95 @@ def set_seeds(seed):
 def shuffle_half_list(original_indices, seed):
 		"""Shuffle a list with a given seed."""
 		import random
-		random.seed(seed)
-		random.Random(seed).shuffle(original_indices)
+		# random.seed(seed)
+		random.Random().shuffle(original_indices)
+		# random.Random(seed).shuffle(original_indices)
 		half_size = len(original_indices) // 2
 		half_indices = original_indices[:half_size]
 		return half_indices
 
+def save_metrics_to_csv(
+    sparsity_data: dict, 
+    similarity_data: dict, 
+    key: str, 
+    sparsity_save_path: str, 
+    similarity_save_path: str
+):
+    """
+    Processes sparsity and similarity data, calculates means, and saves them to CSV files.
+
+    Args:
+        sparsity_data (dict): Dictionary containing sparsity arrays.
+        similarity_data (dict): Dictionary containing similarity arrays.
+        key (str): The unique identifier for the current data sample.
+        sparsity_save_path (str): File path to save the sparsity CSV.
+        similarity_save_path (str): File path to save the similarity CSV.
+    """
+    # --- 1. Process and Save Sparsity Data ---
+    sparsity_records = []
+    for cfg_type, data_array in sparsity_data.items():
+        # data_array shape is (2, 49, 28)
+        # np.mean over axis (1, 2) results in a (2,) shape vector
+        mean_values = np.mean(data_array, axis=(1, 2))
+        
+        record = {
+            "key": key,
+            "cfg_type": cfg_type,
+            "vae_vit_sparsity": mean_values[0],
+            "self_attn_sparsity": mean_values[1]
+        }
+        sparsity_records.append(record)
+    
+    # Create a DataFrame and save to CSV
+    df_sparsity = pd.DataFrame(sparsity_records)
+    # Use mode='a' to append if the file exists, and header=not os.path.exists(...) to write header only once
+    df_sparsity.to_csv(
+        sparsity_save_path, 
+        mode='a', 
+        header=not os.path.exists(sparsity_save_path), 
+        index=False
+    )
+
+    # --- 2. Process and Save Similarity Data ---
+    similarity_records = []
+    for cfg_type, data_array in similarity_data.items():
+        # data_array shape is (49, 28)
+        # np.mean over all axes results in a scalar
+        mean_value = np.mean(data_array)
+        
+        record = {
+            "key": key,
+            "cfg_type": cfg_type,
+            "similarity": mean_value
+        }
+        similarity_records.append(record)
+
+    # Create a DataFrame and save to CSV
+    df_similarity = pd.DataFrame(similarity_records)
+    df_similarity.to_csv(
+        similarity_save_path, 
+        mode='a', 
+        header=not os.path.exists(similarity_save_path), 
+        index=False
+    )
 
 def process_dataset(
 		model, vae_model, tokenizer, new_token_ids, vae_transform, vit_transform,
 		output_dir, cfg_text_scale=4.0, cfg_img_scale=1.5, 
 		cfg_type="serial_text_img", num_samples=None, shard_id=0, total_shards=1, use_think=False, device='cuda',
-		eval_num=1, reorder_method="front",
+		eval_num=1, reorder_method="front", base_attn: Optional[TrickAttention] = None, mlp_args: Optional[MLPArgs] = None,
 ):
 		"""
 		Process images from the dataset using the editing model.
 		"""
+		assert base_attn is not None, "Base attention mechanism must be provided."
+		assert mlp_args is not None, "MLP arguments must be provided."
 		os.makedirs(output_dir, exist_ok=True)
 
 		dataset = load_dataset("stepfun-ai/GEdit-Bench")['train']
 		idx_list = list(range(len(dataset)))
 
-		idx_list = shuffle_half_list(idx_list, seed=42 + shard_id)
+		idx_list = shuffle_half_list(idx_list, seed=42)
 
 		idx_list = idx_list[shard_id::total_shards]
 
@@ -506,8 +575,12 @@ def process_dataset(
 
 				save_path_fullset_source_image = f"{output_dir}/fullset/{task_type}/{instruction_language}/{key}_SRCIMG.png"
 				save_path_fullset = f"{output_dir}/fullset/{task_type}/{instruction_language}/{key}.png"
+				save_path_fullset_sparsity = f"{output_dir}/fullset/{task_type}/{instruction_language}/{key}_sparsity.csv"
+				save_path_fullset_similarity = f"{output_dir}/fullset/{task_type}/{instruction_language}/{key}_similarity.csv"
 				os.makedirs(os.path.dirname(save_path_fullset_source_image), exist_ok=True)
 				os.makedirs(os.path.dirname(save_path_fullset), exist_ok=True)
+				os.makedirs(os.path.dirname(save_path_fullset_sparsity), exist_ok=True)
+				os.makedirs(os.path.dirname(save_path_fullset_similarity), exist_ok=True)
 
 				if os.path.exists(save_path_fullset_source_image) and os.path.exists(save_path_fullset):
 						print(f'sample {key} already generated, skipping...')
@@ -549,6 +622,17 @@ def process_dataset(
 						input_image.save(save_path_fullset_source_image)
 						edited_image.save(save_path_fullset)
 
+						print(f"Saving sparsity and similarity metrics for image {key}...")
+						save_metrics_to_csv(
+								sparsity_data=base_attn.sparsity,
+								similarity_data=mlp_args.mot_sparsity,
+								key=key,
+								sparsity_save_path=save_path_fullset_sparsity,
+								similarity_save_path=save_path_fullset_similarity
+						)
+						base_attn.clear_sparsity()
+						mlp_args.clear_sparsity()
+						
 				except Exception as e:
 						raise
 						print(f"Error processing image {key}: {e}")
@@ -557,43 +641,28 @@ def process_dataset(
 def main():
 		# Parse arguments
 		parser = argparse.ArgumentParser(description="Image editing with text instructions")
-		parser.add_argument("--model_path", type=str, required=True, 
-												help="Path to bagel model")
-		parser.add_argument("--output_dir", type=str, required=True, 
-												help="Directory to save output images")
+		parser.add_argument("--model_path", type=str, required=True, help="Path to bagel model")
+		parser.add_argument("--output_dir", type=str, required=True, help="Directory to save output images")
 		parser.add_argument("--device", type=int, default=0, help="GPU device ID")
 		parser.add_argument("--cfg_text_scale", type=float, default=4.0, help="Text CFG scale")
 		parser.add_argument("--cfg_img_scale", type=float, default=1.5, help="Image CFG scale")
-		parser.add_argument("--cfg_type", type=str, default="serial_text_img", 
-												help="CFG type (parallel, serial_text_img, etc.)")
-		parser.add_argument("--num_samples", type=int, default=None, 
-												help="Number of samples to process (None for all)")
-		parser.add_argument("--shard_id", type=int, default=0, 
-												help="ID of the current shard (0-based)")
-		parser.add_argument("--total_shards", type=int, default=1, 
-												help="Total number of shards")
-		parser.add_argument("--use_think", action='store_true', 
-												help="Whether enable thinking")
-		parser.add_argument("--eval_num", type=int, default=1, 
-												help="Number of images to be evaluated")
+		parser.add_argument("--cfg_type", type=str, default="serial_text_img", help="CFG type (parallel, serial_text_img, etc.)")
+		parser.add_argument("--num_samples", type=int, default=None, help="Number of samples to process (None for all)")
+		parser.add_argument("--shard_id", type=int, default=0, help="ID of the current shard (0-based)")
+		parser.add_argument("--total_shards", type=int, default=1, help="Total number of shards")
+		parser.add_argument("--use_think", action='store_true', help="Whether enable thinking")
+		parser.add_argument("--eval_num", type=int, default=1, help="Number of images to be evaluated")
 
-		parser.add_argument("--threshold", type=float, default=0.5,
-												help="New attention probability threshold to set for sparsity in attention mechanism.")
-		parser.add_argument("--attn_backend", type=str, default="naive_sparse_quant", 
-												help="Attention backend to use.")
-		parser.add_argument("--sparse_gsize", type=int, default=1, 
-												help="Group size for sparse attention.")
-		parser.add_argument("--vae_vit_sparse", action='store_true', 
-												help="Whether to apply sparsity to VAE and ViT attention.")
-		parser.add_argument("--self_attn_sparse", action='store_true', 
-												help="Whether to apply sparsity to self-attention.")
-		parser.add_argument("--reorder_method", type=str, default="front", 
-												help="Method for reordering rope context.")
-		parser.add_argument("--save_dir", type=str, default=None, 
-												help="Directory to save attention probabilities.")
+		parser.add_argument("--threshold", type=float, default=0.5, help="New attention probability threshold to set for sparsity in attention mechanism.")
+		parser.add_argument("--attn_backend", type=str, default="naive_sparse_quant", help="Attention backend to use.")
+		parser.add_argument("--sparse_gsize", type=int, default=1, help="Group size for sparse attention.")
+		parser.add_argument("--vae_vit_sparse", action='store_true', help="Whether to apply sparsity to VAE and ViT attention.")
+		parser.add_argument("--self_attn_sparse", action='store_true', help="Whether to apply sparsity to self-attention.")
+		parser.add_argument("--reorder_method", type=str, default="front", help="Method for reordering rope context.")
+		parser.add_argument("--save_dir", type=str, default=None, help="Directory to save attention probabilities.")
 		parser.add_argument("--mlp_save", type=str, default=None, help="Whether to save MLP activations.")
 		parser.add_argument("--mlp_save_dir", type=str, default="maps/mlp_octupusy_flash", help="Directory to save MLP activations.")
-
+		parser.add_argument("--use_custom_mlp", action='store_true', help="Whether to use custom MLP modules.")
 		args = parser.parse_args()
 
 		attention_backend = args.attn_backend
@@ -611,6 +680,7 @@ def main():
 			)
 
 		mlp_args = MLPArgs(
+			use_custom_mlp=args.use_custom_mlp,
 			save_mlp=args.mlp_save,
 			save_dir=args.mlp_save_dir
 		)
@@ -634,6 +704,8 @@ def main():
 				device=args.device,
 				eval_num=args.eval_num,
 				reorder_method=args.reorder_method,
+				base_attn=base_attention,
+				mlp_args=mlp_args,
 		)
 
 

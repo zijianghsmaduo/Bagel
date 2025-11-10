@@ -33,13 +33,13 @@ LOAD_DIR="q_cfg_dump_octupusy_naive_threshold_4e-5"
 # LOAD_DIR="maps/mlp_after_octupusy_flash"
 # LOAD_DIR="maps/mlp_before_res_octupusy_flash"
 # LOAD_DIR="maps/mlp_before_norm_octupusy_flash"
-# LOAD_DIR="maps/mlp_octupusy_flash_order"
+LOAD_DIR="maps/mlp_octupusy_flash_order"
 # LOAD_DIR="maps/mlp_octupusy_naive_order"
 # LOAD_DIR="q_cfg_dump_octupusy_naive"
 
-# PREFIX="mlp"
-PREFIX="qkv_attn_probs"
-SUFIX=--sufix
+PREFIX="mlp"
+# PREFIX="qkv_attn_probs"
+# SUFIX=--sufix
 
 # CFG_MODE="mse"
 # CFG_MODE="norm_mse"
@@ -66,7 +66,8 @@ CFG_MODE="cosine"
 # NAME="octupusy_cfg_cos_mlp_flash_order"
 # NAME="octupusy_cfg_cos_mlp_naive_order"
 # NAME="octupusy_cfg_cos_q_naive_maybe_wrong"
-NAME="octupusy_cfg_cos_q_naive_threshold_4e-5_maybe_wrong"
+# NAME="octupusy_cfg_cos_q_naive_threshold_4e-5_maybe_wrong"
+NAME="octupusy_cfg_cos_mlp_flash_order_comput_isolated"
 MIN_THRESHOLD=4e-5
 HEAD_TO_PLOT='[-1, 0, 1, 2, 3, 4, 5, 6, 7]'
 

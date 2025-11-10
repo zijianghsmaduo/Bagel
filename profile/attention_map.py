@@ -830,6 +830,43 @@ def compute_group_head_mse_similarity(ref_tensor1, targ_tensor2):
     
     return final_mse_map
 
+def count_isolated_hotspots(similarity_mask: torch.Tensor) -> int:
+    """
+    计算一个2D布尔掩码中孤立的 True 元素的数量。
+    一个元素是孤立的，如果它为 True，并且它的上、下、左、右邻居都为 False。
+
+    Args:
+        similarity_mask (torch.Tensor): (H, L) 形状的布尔张量。
+
+    Returns:
+        int: 孤立的 True 元素的数量。
+    """
+    if not similarity_mask.any():
+        return 0
+
+    # 将布尔掩码转换为浮点数以进行卷积
+    mask_float = similarity_mask.float().unsqueeze(0).unsqueeze(0)  # 形状变为 (1, 1, H, L)
+
+    # 定义一个用于计算邻居数量的卷积核
+    # 这个核会加总上、下、左、右四个邻居的值
+    kernel = torch.tensor([[[[0, 1, 0],
+                             [1, 0, 1],
+                             [0, 1, 0]]]], dtype=torch.float32, device=mask_float.device)
+
+    # 使用卷积计算每个位置的邻居数量
+    # padding='same' 确保输出尺寸与输入相同
+    neighbor_counts = torch.nn.functional.conv2d(mask_float, kernel, padding='same')
+
+    # 移除批次和通道维度
+    neighbor_counts = neighbor_counts.squeeze(0).squeeze(0) # 形状变回 (H, L)
+
+    # 找到那些自身为 True (hotspot) 并且邻居数量为 0 的位置
+    isolated_mask = (similarity_mask) & (neighbor_counts == 0)
+
+    # 返回孤立热点的总数
+    return torch.sum(isolated_mask).item()
+
+
 def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', heads_to_plot=None, timestep=20, mode='mse', prefix='qkv_attn_probs', sufix="_batch_0"):
   if heads_to_plot is None:
     heads_to_plot = list(range(-1, 28))
@@ -866,6 +903,9 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
 
   similarity_cfg_text_list = []
   similarity_cfg_image_list = []
+
+  connected_text_list = []
+  connected_image_list = []
   
   for layer_idx in layer_idxes:
       normal_file = f"./{load_dir}/gen_{prefix}_normal_layer_{layer_idx}_ts_{timestep}{sufix}.pt"
@@ -919,8 +959,22 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
       
       print(f"similarity_cfg_text shape: {similarity_cfg_text}")
 
-      percentage_of_high_similarity_text = torch.mean((similarity_cfg_text <= mse_threshold if 'mse' in mode else similarity_cfg_text >= cosine_threshold).float()).item()
-      percentage_of_high_similarity_image = torch.mean((similarity_cfg_image <= mse_threshold if 'mse' in mode else similarity_cfg_image >= cosine_threshold).float()).item()
+      # percentage_of_high_similarity_text = torch.mean((similarity_cfg_text <= mse_threshold if 'mse' in mode else similarity_cfg_text >= cosine_threshold).float()).item()
+      # percentage_of_high_similarity_image = torch.mean((similarity_cfg_image <= mse_threshold if 'mse' in mode else similarity_cfg_image >= cosine_threshold).float()).item()
+      is_high_similarity_text = (similarity_cfg_text <= mse_threshold if 'mse' in mode else similarity_cfg_text >= cosine_threshold)
+      is_high_similarity_image = (similarity_cfg_image <= mse_threshold if 'mse' in mode else similarity_cfg_image >= cosine_threshold)
+
+      percentage_of_high_similarity_text = torch.mean(is_high_similarity_text.float()).item()
+      percentage_of_high_similarity_image = torch.mean(is_high_similarity_image.float()).item()
+
+      isolated_count_text = count_isolated_hotspots(is_high_similarity_text)
+      isolated_count_image = count_isolated_hotspots(is_high_similarity_image)
+      percentage_of_connected_text = (percentage_of_high_similarity_text * similarity_cfg_text.numel() - isolated_count_text) / similarity_cfg_text.numel()
+      percentage_of_connected_image = (percentage_of_high_similarity_image * similarity_cfg_image.numel() - isolated_count_image) / similarity_cfg_image.numel()
+
+      connected_text_list.append(percentage_of_connected_text)
+      connected_image_list.append(percentage_of_connected_image)
+
       data_aspect_ratio = similarity_cfg_text.shape[1] / similarity_cfg_text.shape[0]
       similarity_cfg_text_list.append(percentage_of_high_similarity_text)
       similarity_cfg_image_list.append(percentage_of_high_similarity_image)
@@ -929,15 +983,20 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
       vmax = torch.max(torch.max(similarity_cfg_text), torch.max(similarity_cfg_image)).item()
       norm_to_use = Normalize(vmin=vmin, vmax=vmax)
       print(f"vmin: {vmin}, vmax: {vmax}")
-      kv_plot(similarity_cfg_text, ax=axes_flat[0], title=f"{mode} similarity with CFG text\n{percentage_of_high_similarity_text:.2%}" + (f" below {mse_threshold}" if 'mse' in mode else f" above {cosine_threshold}"),
+      title_text = (f"{mode} similarity with CFG text\n"
+                    f"{percentage_of_high_similarity_text:.2%} {'below' if 'mse' in mode else 'above'} {mse_threshold if 'mse' in mode else cosine_threshold}\n"
+                    f"Connected Hotspots: {percentage_of_connected_text:.2%} (Isolated: {isolated_count_text})")
+      kv_plot(similarity_cfg_text, ax=axes_flat[0], title=title_text,
                          vmin=vmin, vmax=vmax, 
                          norm=norm_to_use,      # 传入统一的 norm 对象
                          cmap=cmap_to_use, 
                          xlabel=xlabel, ylabel="Head",
                          tick_density=100, square=False,
                          aspect_ratio=data_aspect_ratio)
-
-      kv_plot(similarity_cfg_image, ax=axes_flat[1], title=f"{mode} similarity with CFG Image\n{percentage_of_high_similarity_image:.2%}" + (f" below {mse_threshold}" if 'mse' in mode else f" above {cosine_threshold}"),
+      title_image = (f"{mode} similarity with CFG Image\n"
+                    f"{percentage_of_high_similarity_image:.2%} {'below' if 'mse' in mode else 'above'} {mse_threshold if 'mse' in mode else cosine_threshold}\n"
+                    f"Connected Hotspots: {percentage_of_connected_image:.2%} (Isolated: {isolated_count_image})")
+      kv_plot(similarity_cfg_image, ax=axes_flat[1], title=title_image,
                          vmin=vmin, vmax=vmax, 
                          norm=norm_to_use,      # 传入统一的 norm 对象
                          cmap=cmap_to_use, 
@@ -945,28 +1004,6 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
                          tick_density=100, square=False,
                          aspect_ratio=data_aspect_ratio)
       
-      # for i, head in enumerate(heads_to_plot):
-      #     ax = axes_flat[i]
-      #     # entry = all_entries[0]
-      #     # kv = entry[elem]
-
-      #     print(f"Original Tensor Shape: {kv.shape}")
-      #     kv = fn(kv, head=head)
-      #     print(f"Processed Tensor Shape: {kv.shape}")
-      #     data_aspect_ratio = kv.shape[1] / kv.shape[0]
-
-      #     postfix1 = f"Head {head}" if head >=0 else "Mean Head"
-          
-      #     print(f"Plotting {postfix1} for Layer {layer_idx}")
-      #     # --- 调用修改后的 attention_plot 函数 ---
-      #     kv_plot(kv, ax=ax, title=postfix1,
-      #                    vmin=vmin, vmax=vmax, 
-      #                    norm=norm_to_use,      # 传入统一的 norm 对象
-      #                    cmap=cmap_to_use, 
-      #                    xlabel="Dim", ylabel="Key",
-      #                    tick_density=100, square=False,
-      #                    aspect_ratio=data_aspect_ratio)      # 传入统一的 cmap
-
       for i in range(num_heads, len(axes_flat)):
           axes_flat[i].set_visible(False)
       # --- 添加一个全局颜色条 ---
@@ -982,6 +1019,8 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
 
   write_log = f"Average similarity with CFG text: {np.mean(np.array(similarity_cfg_text_list))}\n"
   write_log += f"Average similarity with CFG image: {np.mean(np.array(similarity_cfg_image_list))}\n"
+  write_log += f"Average connected hotspots (CFG text): {np.mean(np.array(connected_text_list)):.2f}\n"
+  write_log += f"Average connected hotspots (CFG image): {np.mean(np.array(connected_image_list)):.2f}\n"
   with open(os.path.join(figure_path, f"{elem}_cfg_similarity_global_{name}log.txt"), 'a') as f:
     f.write(write_log)
 

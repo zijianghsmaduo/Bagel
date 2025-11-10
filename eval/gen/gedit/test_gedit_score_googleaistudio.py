@@ -15,6 +15,8 @@ import threading
 import time
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import numpy as np
+import pandas as pd
 GROUPS = [
     "background_change", "color_alter", "material_alter", "motion_change", "ps_human", "style_change", "subject-add", "subject-remove", "subject-replace", "text_change", "tone_transfer"
 ]
@@ -31,10 +33,49 @@ def process_single_item(item, vie_score, vie_idx, max_retries=10000):
     save_path_fullset_source_image = f"{save_path}/fullset/{group_name}/{instruction_language}/{key}_SRCIMG.png"
     save_path_fullset_result_image = f"{save_path}/fullset/{group_name}/{instruction_language}/{key}.png"
     
+    sparsity_csv_path = f"{save_path}/fullset/{group_name}/{instruction_language}/{key}_sparsity.csv"
+    similarity_csv_path = f"{save_path}/fullset/{group_name}/{instruction_language}/{key}_similarity.csv"
+
     src_image_path = save_path_fullset_source_image
     save_path_item = save_path_fullset_result_image
 
-    print(f"vie_idx: {vie_idx}")
+    vae_vit_sparsity = np.nan
+    self_attn_sparsity = np.nan
+    cfg_text_similarity = np.nan
+    cfg_img_similarity = np.nan
+
+    # --- 新增：读取并解析 sparsity 文件 ---
+    try:
+        if megfile.smart_exists(sparsity_csv_path):
+            with megfile.smart_open(sparsity_csv_path, 'r') as f:
+                df_sparsity = pd.read_csv(f)
+                # 计算 'cfg_text' 和 'cfg_img' 的平均稀疏度
+                # 如果只有其中一种，也能正常工作
+                self_relevant_rows = df_sparsity[df_sparsity['cfg_type'].isin(['normal', 'cfg_text', 'cfg_img'])]
+                if not self_relevant_rows.empty:
+                    self_attn_sparsity = self_relevant_rows['self_attn_sparsity'].mean()
+                vae_vit_relevant_rows = df_sparsity[df_sparsity['cfg_type'].isin(['normal', 'cfg_text'])]
+                if not vae_vit_relevant_rows.empty:
+                    vae_vit_sparsity = vae_vit_relevant_rows['vae_vit_sparsity'].mean()
+    except Exception as e:
+        print(f"Warning: Could not read or parse sparsity file {sparsity_csv_path}. Error: {e}")
+
+    # --- 新增：读取并解析 similarity 文件 ---
+    try:
+        if megfile.smart_exists(similarity_csv_path):
+            with megfile.smart_open(similarity_csv_path, 'r') as f:
+                df_similarity = pd.read_csv(f)
+                cfg_txt_relevant_rows = df_similarity[df_similarity['cfg_type'].isin(['cfg_text'])]
+                if not cfg_txt_relevant_rows.empty:
+                    cfg_text_similarity = cfg_txt_relevant_rows['similarity'].mean()
+                cfg_img_relevant_rows = df_similarity[df_similarity['cfg_type'].isin(['cfg_img'])]
+                if not cfg_img_relevant_rows.empty:
+                    cfg_img_similarity = cfg_img_relevant_rows['similarity'].mean()
+    except Exception as e:
+        print(f"Warning: Could not read or parse similarity file {similarity_csv_path}. Error: {e}")
+
+
+    # print(f"vie_idx: {vie_idx}")
     
     for retry in range(max_retries):
         try:
@@ -45,7 +86,6 @@ def process_single_item(item, vie_score, vie_idx, max_retries=10000):
             score_list = vie_score.evaluate([pil_image_raw, pil_image_edited], text_prompt)
             sementics_score, quality_score, overall_score = score_list
 
-            # API_KEYS_RECORD[KEY_INDEX] += 1
 
             # print(f"sementics_score: {sementics_score}, quality_score: {quality_score}, overall_score: {overall_score}, instruction_language: {instruction_language}, instruction: {instruction}")
             
@@ -56,7 +96,11 @@ def process_single_item(item, vie_score, vie_idx, max_retries=10000):
                 "sementics_score": sementics_score,
                 "quality_score": quality_score,
                 "intersection_exist" : item['Intersection_exist'],
-                "instruction_language" : item['instruction_language']
+                "instruction_language" : item['instruction_language'],
+                "vae_vit_sparsity": vae_vit_sparsity,
+                "self_attn_sparsity": self_attn_sparsity,
+                "cfg_text_similarity": cfg_text_similarity,
+                "cfg_img_similarity": cfg_img_similarity
             }
         except Exception as e:
             
@@ -161,7 +205,13 @@ if __name__ == "__main__":
             # Save group-specific CSV
             group_csv_path = os.path.join(save_path_new, f"{model_name}_{group_name}_gpt_score.csv")
             with megfile.smart_open(group_csv_path, 'w', newline='') as f:
-                fieldnames = ["source_image", "edited_image", "instruction", "sementics_score", "quality_score", "intersection_exist", "instruction_language"]
+                # fieldnames = ["source_image", "edited_image", "instruction", "sementics_score", "quality_score", "intersection_exist", "instruction_language"]
+                fieldnames = [
+                    "source_image", "edited_image", "instruction", 
+                    "sementics_score", "quality_score", "intersection_exist", 
+                    "instruction_language", "vae_vit_sparsity", 
+                    "self_attn_sparsity", "cfg_text_similarity", "cfg_img_similarity"
+                ]
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 for row in group_csv_list:
@@ -178,7 +228,13 @@ if __name__ == "__main__":
         # Save combined CSV
         combined_csv_path = os.path.join(save_path_new, f"{model_name}_combined_gpt_score.csv")
         with megfile.smart_open(combined_csv_path, 'w', newline='') as f:
-            fieldnames = ["source_image", "edited_image", "instruction", "sementics_score", "quality_score", "intersection_exist", "instruction_language"]
+            # fieldnames = ["source_image", "edited_image", "instruction", "sementics_score", "quality_score", "intersection_exist", "instruction_language"]
+            fieldnames = [
+                "source_image", "edited_image", "instruction", 
+                "sementics_score", "quality_score", "intersection_exist", 
+                "instruction_language", "vae_vit_sparsity", 
+                "self_attn_sparsity", "cfg_text_similarity", "cfg_img_similarity"
+            ]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for row in all_csv_list:
