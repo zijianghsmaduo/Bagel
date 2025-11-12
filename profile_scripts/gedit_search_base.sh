@@ -3,6 +3,7 @@
 ## 2. THRESHOLD
 ## 3. GROUP_SIZE
 ## 4. METRICS_JSON_PATH
+## 5. DEVICE_BASE
 
 
 # Clean up function
@@ -20,13 +21,14 @@ trap cleanup SIGINT SIGTERM
 export PYTHONPATH=.
 
 N_GPU=4  # Number of GPU used in for the evaluation
-DEVICE_BASE=0
+# DEVICE_BASE=0
 N_EVAL=-1  # Number of images to be evaluated
 MODEL_PATH="./models/BAGEL-7B-MoT"
 
 OUTPUT_DIR=${1:-"/share/liujun/xinhaolee/workspace/mllms/Bagel/outputs/gedit_results_grid"}
 THRESHOLD=${2:-"4e-5"}
 GROUP_SIZE=${3:-"10"}
+DEVICE_BASE=${5:-0}
 
 # 注意：METRICS_JSON_PATH 依赖于 THRESHOLD 和 GROUP_SIZE，所以它必须在它们之后定义
 METRICS_JSON_PATH=${4:-"$OUTPUT_DIR/metrics_threshold_${THRESHOLD}_group_size_${GROUP_SIZE}.json"}
@@ -46,9 +48,11 @@ threshold=$THRESHOLD
 sparse_gsize=$GROUP_SIZE
 
 attn_backend="naive_sparse_quant_cfg"
+# attn_backend="flash"
 vae_vit_sparse=--vae_vit_sparse
 self_attn_sparse=--self_attn_sparse
-# use_custom_mlp=--use_custom_mlp
+use_custom_mlp=--use_custom_mlp
+mlp_use_similarity=--mlp_use_similarity
 reorder_method="None"
 save_dir="maps/gedit_maps"
 
@@ -79,7 +83,7 @@ for ((i=0; i<$N_GPU; i++)); do
 		$vae_vit_sparse $self_attn_sparse \
 		$mlp_save $mlp_save_dir \
 		--reorder_method $reorder_method \
-		$use_custom_mlp 2>&1 | tee "$LOG_DIR"/request_$(($N_GPU + i)).log &
+		$use_custom_mlp $mlp_use_similarity 2>&1 | tee "$LOG_DIR"/request_$(($N_GPU + i)).log &
 done
 
 wait

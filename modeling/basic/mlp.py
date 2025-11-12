@@ -13,6 +13,178 @@ from modeling.basic.sparse import BlockQuantize
 
 import numpy as np
 
+class WeightGroupQuantizer:
+	"""
+	一个专门用于对 2D 权重矩阵进行组量化的类。
+	支持 INT8, INT4, 和 FP4 模式。
+	"""
+	def __init__(self, group_size: int = 128, mode: str = 'int8'):
+		self.group_size = group_size
+		self.mode = mode
+
+		if self.mode == 'int4':
+			self.n_bits = 4
+			if self.group_size % 2 != 0:
+				raise ValueError("对于 INT4 模式, group_size 必须是 2 的倍数。")
+		elif self.mode == 'int8':
+			self.n_bits = 8
+		elif self.mode == 'fp4':
+			self.n_bits = 4
+			self.fp4_codebook = torch.tensor([
+				-1.0, -0.6667, -0.5, -0.3333, -0.25, -0.1667, -0.0833, 0.0,
+				0.0833, 0.1667, 0.25, 0.3333, 0.5, 0.6667, 1.0
+			], dtype=torch.float16) # 使用 float16 以节省码本存储
+		else:
+			raise ValueError(f"Unsupported mode: {mode}")
+
+		if 'int' in self.mode:
+			self.q_max = 2 ** (self.n_bits - 1) - 1
+			self.q_min = -2 ** (self.n_bits - 1)
+
+	def quantize(self, weight: torch.Tensor) -> Tuple:
+		if self.mode == 'int8':
+			return self._quantize_int(weight)
+		elif self.mode == 'int4':
+			return self._quantize_int(weight)
+		elif self.mode == 'fp4':
+			return self._quantize_fp4(weight)
+		else:
+			raise ValueError(f"Unsupported mode: {self.mode}")
+
+	def dequantize(self, *args, original_shape: Tuple) -> torch.Tensor:
+		if self.mode == 'int8':
+			return self._dequantize_int(*args, original_shape=original_shape)
+		elif self.mode == 'int4':
+			q_packed, scales, zero_points = args
+			return self._dequantize_int4(q_packed, scales, zero_points, original_shape=original_shape)
+		elif self.mode == 'fp4':
+			q_indices, scales = args
+			return self._dequantize_fp4(q_indices, scales, original_shape=original_shape)
+		else:
+			raise ValueError(f"Unsupported mode: {self.mode}")
+
+	def _quantize_int(self, weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+		"""INT8 和 INT4 的核心非对称量化逻辑。"""
+		assert weight.dim() == 2, "权重必须是 2D 张量"
+		out_features, in_features = weight.shape
+		if in_features % self.group_size != 0:
+			raise ValueError(f"输入特征维度 ({in_features}) 必须能被 group_size ({self.group_size}) 整除。")
+
+		grouped_weight = weight.view(out_features, -1, self.group_size)
+		grouped_weight_fp32 = grouped_weight.float()
+		
+		min_vals, _ = torch.min(grouped_weight_fp32, dim=-1)
+		max_vals, _ = torch.max(grouped_weight_fp32, dim=-1)
+
+		scales = (max_vals - min_vals) / (self.q_max - self.q_min)
+		scales = scales.clamp(min=1e-6)
+		
+		zero_points = torch.round(self.q_min - min_vals / scales).to(torch.int8)
+
+		q_weight = torch.round(grouped_weight_fp32 / scales.unsqueeze(-1) + zero_points.unsqueeze(-1))
+		q_weight = q_weight.clamp(self.q_min, self.q_max).to(torch.int8)
+
+		if self.mode == 'int4':
+			# --- INT4 打包逻辑 ---
+			# 将范围 [-8, 7] 映射到 [0, 15]
+			q_weight_shifted = q_weight - self.q_min
+			# 将每两个 int4 值打包成一个 int8
+			q_packed = q_weight_shifted.view(out_features, -1, self.group_size // 2, 2)
+			val1 = q_packed[..., 0]
+			val2 = q_packed[..., 1]
+			# val1 存高4位, val2 存低4位
+			q_packed_byte = (val1 << 4) | val2
+			return q_packed_byte.to(torch.uint8), scales, zero_points
+		else: # INT8
+			return q_weight, scales, zero_points
+
+	def _dequantize_int(self, q_weight: torch.Tensor, scales: torch.Tensor, zero_points: torch.Tensor, original_shape: Tuple) -> torch.Tensor:
+		"""INT8 的反量化逻辑。"""
+		dequantized_groups = (q_weight.float() - zero_points.unsqueeze(-1)) * scales.unsqueeze(-1)
+		return dequantized_groups.reshape(original_shape)
+
+	def _dequantize_int4(self, q_packed: torch.Tensor, scales: torch.Tensor, zero_points: torch.Tensor, original_shape: Tuple) -> torch.Tensor:
+		"""INT4 的反量化逻辑，包含解包。"""
+		out_features, _ = original_shape
+		
+		# --- INT4 解包逻辑 ---
+		# 从 uint8 解包回两个 int4 值
+		val1_shifted = q_packed >> 4
+		val2_shifted = q_packed & 0x0F # 掩码，只取低4位
+		
+		# 组合回原始的 int8 张量形状
+		q_weight_shifted = torch.stack([val1_shifted, val2_shifted], dim=-1).view(out_features, -1, self.group_size)
+		
+		# 从 [0, 15] 映射回 [-8, 7]
+		q_weight = q_weight_shifted.to(torch.int8) + self.q_min
+
+		# 使用通用的反量化公式
+		return self._dequantize_int(q_weight, scales, zero_points, original_shape)
+
+	def _quantize_fp4(self, weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+		"""FP4 对称量化逻辑。"""
+		assert weight.dim() == 2, "权重必须是 2D 张量"
+		out_features, in_features = weight.shape
+		if in_features % self.group_size != 0:
+			raise ValueError(f"输入特征维度 ({in_features}) 必须能被 group_size ({self.group_size}) 整除。")
+
+		grouped_weight = weight.view(out_features, -1, self.group_size)
+		
+		# 1. 对称量化，只计算 scale
+		scales = grouped_weight.abs().max(dim=-1, keepdim=True).values
+		scales = scales.clamp(min=1e-6)
+
+		# 2. 归一化到 [-1, 1]
+		normalized_weight = grouped_weight / scales
+
+		# 3. 找到码本中最近的值的索引
+		codebook = self.fp4_codebook.to(weight.device, dtype=weight.dtype)
+		# 扩展维度以进行广播和距离计算
+		# normalized_weight: (O, G_num, G_size, 1)
+		# codebook:          (1, 1,     1,      C_size)
+		abs_diff = torch.abs(normalized_weight.unsqueeze(-1) - codebook)
+		q_indices = torch.argmin(abs_diff, dim=-1).to(torch.int8)
+
+		return q_indices, scales.squeeze(-1)
+
+	def _dequantize_fp4(self, q_indices: torch.Tensor, scales: torch.Tensor, original_shape: Tuple) -> torch.Tensor:
+		"""FP4 反量化逻辑。"""
+		codebook = self.fp4_codebook.to(scales.device, dtype=scales.dtype)
+		
+		# 1. 使用索引从码本中恢复归一化的值
+		quantized_normalized = codebook[q_indices]
+		
+		# 2. 乘以 scale 恢复浮点值
+		dequantized_groups = quantized_normalized * scales.unsqueeze(-1)
+		
+		return dequantized_groups.reshape(original_shape)
+	
+	def simulate_quantization(self, weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+		"""
+		执行量化和立即反量化的往返过程，以模拟精度损失。
+
+		Args:
+				weight (torch.Tensor): 原始的浮点权重张量。
+
+		Returns:
+				Tuple[torch.Tensor, torch.Tensor]:
+				- dequantized_weight: 模拟量化后的浮点权重张量。
+				- scales: 计算出的量化尺度，可用于分析。
+		"""
+		original_shape = weight.shape
+		
+		# 1. 执行“真实”量化
+		quantized_data = self.quantize(weight)
+		
+		# 2. 立即执行反量化
+		dequantized_weight = self.dequantize(*quantized_data, original_shape=original_shape)
+		
+		# 提取 scales 用于返回
+		# scales 通常是元组中的第二个元素
+		scales = quantized_data[1]
+		
+		return dequantized_weight, scales
+
 def calculate_and_print_error(
 		tensor_a: torch.Tensor, 
 		tensor_b: torch.Tensor, 
@@ -123,8 +295,9 @@ class ReuseMLP(Qwen2MLP):
 		self.use_quantized_w = use_quantized_w
 		self.use_similarity = use_similarity
 
-		self.quantizer = BlockQuantize(group_size=32)
-		self.quant_type = "nvfp4"
+		# self.quantizer = BlockQuantize(group_size=16)
+		self.quant_type = "int8"
+		self.quantizer = WeightGroupQuantizer(group_size=16, mode=self.quant_type)
 
 		self.gate_proj_q = None
 		self.gate_proj_s = None
@@ -155,7 +328,6 @@ class ReuseMLP(Qwen2MLP):
 		quant, scale = quantizer.forward(weight_reshaped, mode=quant_type)
 		# quant = weight_reshaped
 		# scale = torch.ones_like(quant)
-		# quant = quant.permute(1, 0, 2).contiguous()
 		return quant.reshape(D, I), scale
 
 	def compute_cosine_similarity(self, tensor_a: torch.Tensor, tensor_b: torch.Tensor) -> torch.Tensor:
@@ -187,20 +359,20 @@ class ReuseMLP(Qwen2MLP):
 		if cfg_type is None or self.use_similarity is False:
 			if use_quantized_w and self.use_quantized_w:
 				if self.gate_proj_q is None:
-					# print(f"--- Performing JIT quantization for ReuseMLP on device: {self.gate_proj.weight.device} ---")
-					self.gate_proj_q, self.gate_proj_s = self.quantize_up_weight(self.gate_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
-					self.up_proj_q, self.up_proj_s = self.quantize_up_weight(self.up_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
-					self.down_proj_q, self.down_proj_s = self.quantize_down_weight(self.down_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
+					self.gate_proj_q, self.gate_proj_s = self.quantizer.simulate_quantization(self.gate_proj.weight.data)
+					self.up_proj_q, self.up_proj_s = self.quantizer.simulate_quantization(self.up_proj.weight.data)
+					self.down_proj_q, self.down_proj_s = self.quantizer.simulate_quantization(self.down_proj.weight.data)
+					# self.gate_proj_q, self.gate_proj_s = self.quantize_up_weight(self.gate_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
+					# self.up_proj_q, self.up_proj_s = self.quantize_up_weight(self.up_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
+					# self.down_proj_q, self.down_proj_s = self.quantize_down_weight(self.down_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
 
 					# self.gate_proj_q = self.gate_proj.weight
 					# self.up_proj_q = self.up_proj.weight
 					# self.down_proj_q = self.down_proj.weight
-					# print("--- JIT Quantization complete and original weights deleted. ---")
 				assert self.gate_proj_q is not None, "Quantized gate projection weights are not initialized."
 				assert self.up_proj_q is not None, "Quantized up projection weights are not initialized."
 				assert self.down_proj_q is not None, "Quantized down projection weights are not initialized."
 
-				print(111)
 				gated_o = torch.nn.functional.linear(hidden_state, self.gate_proj_q)
 				up_o = torch.nn.functional.linear(hidden_state, self.up_proj_q)
 				gated_value = self.act_fn(gated_o) * up_o

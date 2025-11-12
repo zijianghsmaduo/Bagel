@@ -3,8 +3,10 @@
 # --- Configuration ---
 # 定义要搜索的 threshold 和 group_size 列表
 # 您可以根据需要向这些数组中添加任意数量的值
-THRESHOLDS=(4e-7 4e-6 1e-5 2e-5 4e-5 8e-5 1e-4 c4e-4 8e-4 1e-3)
-GROUP_SIZES=(8 10 14 16 32 64)
+# THRESHOLDS=(4e-7 4e-6 1e-5 2e-5 4e-5 8e-5 1e-4 4e-4 8e-4 1e-3)
+# GROUP_SIZES=(8 10 14 16 32 64)
+THRESHOLDS=(4e-7 4e-6 1e-5 2e-5)
+GROUP_SIZES=(8 10 14 16)
 # THRESHOLDS=(4e-5)
 # GROUP_SIZES=(10)
 # --- 1. 定义 Threshold (浮点数) 的搜索范围 ---
@@ -33,6 +35,8 @@ GROUP_SIZES=(8 10 14 16 32 64)
 # 定义主输出目录和最终的汇总 CSV 文件
 MAIN_OUTPUT_DIR="outputs/profile_results/grid_search"
 MAIN_OUTPUT_DIR=$PWD/$MAIN_OUTPUT_DIR
+timestamp=$(date +"%Y%m%d_%H%M%S")
+MAIN_OUTPUT_DIR=$MAIN_OUTPUT_DIR\_$timestamp
 echo "Main Output Directory: $MAIN_OUTPUT_DIR"
 SUMMARY_CSV="$MAIN_OUTPUT_DIR/grid_search_summary.csv"
 
@@ -60,10 +64,11 @@ for threshold in "${THRESHOLDS[@]}"; do
 		# 为当前参数组合定义一个唯一的输出目录
 		RUN_OUTPUT_DIR="$MAIN_OUTPUT_DIR/thresh_${threshold}_gsize_${gsize}"
 		METRICS_JSON_PATH="$RUN_OUTPUT_DIR/summary_metrics.json"
+		DEVICE_BASE=4
 
 		# 调用基础脚本执行实验，并将输出目录、threshold 和 group_size 作为参数传入
 		# 假设 gedit_search_base.sh 已经被修改为可以接收这三个参数
-		./profile_scripts/gedit_search_base.sh "$RUN_OUTPUT_DIR" "$threshold" "$gsize" "$METRICS_JSON_PATH"
+		./profile_scripts/gedit_search_base.sh "$RUN_OUTPUT_DIR" "$threshold" "$gsize" "$METRICS_JSON_PATH" "$DEVICE_BASE"
 
 		# 检查基础脚本是否成功执行 (可选但推荐)
 		if [ $? -ne 0 ]; then
@@ -75,9 +80,16 @@ for threshold in "${THRESHOLDS[@]}"; do
 		duration=$((run_end_time - run_start_time))
 		minutes=$((duration / 60))
 		seconds=$((duration % 60))
-		echo "----------------------------------------------------------------------"
-		echo "Run finished. Collecting results for Threshold: $threshold, Group Size: $gsize"
-		echo "----------------------------------------------------------------------"
+		# echo "----------------------------------------------------------------------"
+		# echo "Run finished. Collecting results for Threshold: $threshold, Group Size: $gsize"
+		# echo "----------------------------------------------------------------------"
+		# 写入到日志文件（追加），并同时输出到控制台
+		LOG_FILE="$RUN_OUTPUT_DIR/run.log"
+		mkdir -p "$(dirname "$LOG_FILE")"
+		echo "Run finished at: $(date +"%Y-%m-%d %H:%M:%S")" | tee -a "$LOG_FILE"
+		echo "Duration: ${minutes} minutes ${seconds} seconds (${duration} seconds)" | tee -a "$LOG_FILE"
+		echo "Threshold: $threshold, Group Size: $gsize" | tee -a "$LOG_FILE"
+		echo "----------------------------------------" | tee -a "$LOG_FILE"
 
 		# 调用 Python 脚本来分析本次运行的结果，并追加到汇总 CSV 文件中
 		# 参数：1. 阈值, 2. 组大小, 3. 本次运行的输出目录, 4. 汇总CSV文件的路径

@@ -474,7 +474,8 @@ def shuffle_half_list(original_indices, seed):
 		# random.seed(seed)
 		random.Random().shuffle(original_indices)
 		# random.Random(seed).shuffle(original_indices)
-		half_size = len(original_indices) // 2
+		# half_size = len(original_indices) // 2
+		half_size = len(original_indices) // 4
 		half_indices = original_indices[:half_size]
 		return half_indices
 
@@ -552,7 +553,12 @@ def process_dataset(
 		"""
 		Process images from the dataset using the editing model.
 		"""
-		assert base_attn is not None, "Base attention mechanism must be provided."
+		# assert base_attn is not None, "Base attention mechanism must be provided."
+		dummy_sparsity = {
+      "normal": np.zeros((2, 49, 28), dtype=np.float32),
+      "cfg_text": np.zeros((2, 49, 28), dtype=np.float32),
+      "cfg_img": np.zeros((2, 49, 28), dtype=np.float32)
+    }
 		assert mlp_args is not None, "MLP arguments must be provided."
 		os.makedirs(output_dir, exist_ok=True)
 
@@ -624,13 +630,14 @@ def process_dataset(
 
 						print(f"Saving sparsity and similarity metrics for image {key}...")
 						save_metrics_to_csv(
-								sparsity_data=base_attn.sparsity,
+								sparsity_data= dummy_sparsity if base_attn is None else base_attn.sparsity,
 								similarity_data=mlp_args.mot_sparsity,
 								key=key,
 								sparsity_save_path=save_path_fullset_sparsity,
 								similarity_save_path=save_path_fullset_similarity
 						)
-						base_attn.clear_sparsity()
+						if base_attn is not None:
+							base_attn.clear_sparsity()
 						mlp_args.clear_sparsity()
 						
 				except Exception as e:
@@ -663,6 +670,7 @@ def main():
 		parser.add_argument("--mlp_save", type=str, default=None, help="Whether to save MLP activations.")
 		parser.add_argument("--mlp_save_dir", type=str, default="maps/mlp_octupusy_flash", help="Directory to save MLP activations.")
 		parser.add_argument("--use_custom_mlp", action='store_true', help="Whether to use custom MLP modules.")
+		parser.add_argument("--mlp_use_similarity", action='store_true', help="Whether to use similarity-based sparsity in MLP.")
 		args = parser.parse_args()
 
 		attention_backend = args.attn_backend
@@ -681,6 +689,7 @@ def main():
 
 		mlp_args = MLPArgs(
 			use_custom_mlp=args.use_custom_mlp,
+			use_similarity=args.mlp_use_similarity,
 			save_mlp=args.mlp_save,
 			save_dir=args.mlp_save_dir
 		)
