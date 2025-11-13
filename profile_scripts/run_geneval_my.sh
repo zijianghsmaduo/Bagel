@@ -2,18 +2,31 @@
 # SPDX-License-Identifier: Apache-2.0
 
 set -x
-GPU_START=4
-NUM_GPUS=8
+GPU_START=1
+NUM_GPUS=4
 
 # Set PYTHONPATH to include project root
 export PYTHONPATH=.
 
 model_path="./models/BAGEL-7B-MoT"
 
-output_path=./outputs/geneval_results
+output_path=./outputs/geneval/geneval_results
 # output_path=$1
 timestamp=$(date +"%Y%m%d_%H%M%S")
 output_path=$output_path\_$timestamp
+
+threshold=4e-5
+sparse_gsize=10
+
+# attn_backend="naive_sparse_quant_cfg"
+attn_backend="flash"
+vae_vit_sparse=--vae_vit_sparse
+self_attn_sparse=--self_attn_sparse
+# use_custom_mlp=--use_custom_mlp
+# mlp_use_similarity=--mlp_use_similarity
+reorder_method="None"
+save_dir="maps/gedit_maps"
+
 mkdir -p $output_path
 {
     date '+%Y-%m-%d %H:%M:%S'
@@ -26,11 +39,18 @@ mkdir -p $output_path
     # Launch processes in parallel for each GPU/chunk.
     for i in $(seq $GPU_START $(($NUM_GPUS - 1))); do
         CUDA_VISIBLE_DEVICES=$i \
-        python ./profile_scripts/run_geneval_my.py \
+        python ./profile/run_geneval_my.py \
             --group_id $i --group_num $NUM_GPUS --max_mem_per_gpu 80GiB --dtype bfloat16 \
             --model-path $model_path \
             --output_dir $output_path/images \
-            --metadata_file $metadata_file &
+            --metadata_file $metadata_file \
+						--threshold $threshold --attn_backend $attn_backend \
+						--save_dir $save_dir \
+						--sparse_gsize $sparse_gsize \
+						$vae_vit_sparse $self_attn_sparse \
+						$mlp_save $mlp_save_dir \
+						--reorder_method $reorder_method \
+						$use_custom_mlp $mlp_use_similarity &
     done
 
     # Wait for all background processes to finish.

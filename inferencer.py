@@ -161,6 +161,9 @@ class InterleaveInferencer:
             curr_rope=ropes_cfg, 
             image_sizes=[image_shape], 
         )
+        
+        # if kv_struct.gen_image is None:
+            
 
         unpacked_latent = self.model.generate_image(
             past_key_values=past_key_values,
@@ -410,6 +413,8 @@ class InterleaveInferencer:
         cfg_img_context = deepcopy(gen_context)
         kv_struct = KVCacheStructure()
 
+        is_editing = False
+
         with torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             if think:
                 if understanding_output:
@@ -437,6 +442,7 @@ class InterleaveInferencer:
                     cfg_img_context = self.update_context_text(input_term, cfg_img_context)
 
                 elif isinstance(input_term, Image.Image):
+                    is_editing = not understanding_output
                     input_term = self.vae_transform.resize_transform(pil_img2rgb(input_term))
                     print("VAE input image size:", input_term.size)
                     gen_context = self.update_context_image(input_term, gen_context, vae=not understanding_output, kv_struct=kv_struct)
@@ -466,7 +472,21 @@ class InterleaveInferencer:
                     print(f"After adding generated text, kv_lens: {gen_context['kv_lens']}")
                     output_list.append(gen_text)
 
-                kv_struct.calculate_gen_image()
+                if is_editing:
+                  kv_struct.calculate_gen_image()
+                elif not understanding_output: # generation
+                  nr_image_tokens = (image_shapes[0] // self.model.latent_downsample) * (image_shapes[1] // self.model.latent_downsample) + 2
+                  if think:
+                    assert kv_struct.gen_text is not None
+                    assert kv_struct.system_prompt is not None
+                    kv_struct.gen_image = (kv_struct.gen_text[1]+1, kv_struct.gen_text[1]+1+nr_image_tokens-1)
+                    kv_struct.cfg_text_gen_image = (kv_struct.system_prompt[1]+1, kv_struct.system_prompt[1]+1+nr_image_tokens-1)
+                    kv_struct.len = kv_struct.gen_image[1]+1
+                  else:
+                    kv_struct.calculate_gen_image(
+                        task_mode="generation", 
+                        image_token_len=nr_image_tokens
+                    )
                 kv_struct.print_structure()
 
                 if self.reorder_method != "None":

@@ -68,6 +68,7 @@ if __name__ == "__main__":
 	parser.add_argument("--use_custom_mlp", action='store_true', help="Whether to use custom MLP with CFG sparsity tracking.")
 	parser.add_argument("--quantized_mlp_w", action='store_true', help="Whether to use quantized weights for text generation in custom MLP.")
 	parser.add_argument("--mlp_use_similarity", action='store_true', help="Whether to use similarity in custom MLP.")
+	parser.add_argument("--task_mode", type=str, default="editing", choices=["editing", "generation", "understanding"], help="Task mode for inference.")
 	args = parser.parse_args()
 
 	attention_backend = args.attn_backend
@@ -287,17 +288,19 @@ if __name__ == "__main__":
 		output_dict = inferencer(image=image, text=prompt, understanding_output=True, **inference_hyper)
 		print(output_dict['text'])
 
-	# image1 = Image.open('test_images/women.jpg')
-	# editing_inference("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
-	image2 = Image.open('test_images/octupusy.jpg')
-	editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
-	# image1 = Image.open('test_images/women.jpg')
-	# editing_inference_with_thinking("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
-
-	# image3 = Image.open('test_images/meme.jpg')
-	# understanding_inference("Can someone explain what’s funny about this meme??", image3)
-
-	inferencer.model.language_model.model
+	if args.task_mode == "generation":
+		prompt = "A female cosplayer portraying an ethereal fairy or elf, wearing a flowing dress made of delicate fabrics in soft, mystical colors like emerald green and silver. She has pointed ears, a gentle, enchanting expression, and her outfit is adorned with sparkling jewels and intricate patterns. The background is a magical forest with glowing plants, mystical creatures, and a serene atmosphere."
+		gen_inference_with_thinking(prompt)
+	elif args.task_mode == "editing":
+		image2 = Image.open('test_images/octupusy.jpg')
+		editing_inference_with_thinking("Could you display the sculpture that takes after this design?", image2)
+		# image1 = Image.open('test_images/women.jpg')
+		# editing_inference_with_thinking("She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes.", image1)
+	elif args.task_mode == "understanding":
+		image3 = Image.open('test_images/meme.jpg')
+		understanding_inference("Can someone explain what’s funny about this meme??", image3)
+	else:
+		raise ValueError(f"Unsupported task mode: {args.task_mode}")
 
 	if base_attention is not None:
 		if args.is_truncate and args.is_save:

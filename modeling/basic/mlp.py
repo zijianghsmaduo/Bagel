@@ -96,6 +96,7 @@ class WeightGroupQuantizer:
 			q_packed_byte = (val1 << 4) | val2
 			return q_packed_byte.to(torch.uint8), scales, zero_points
 		else: # INT8
+			# print("INT8 quantization completed.")
 			return q_weight, scales, zero_points
 
 	def _dequantize_int(self, q_weight: torch.Tensor, scales: torch.Tensor, zero_points: torch.Tensor, original_shape: Tuple) -> torch.Tensor:
@@ -296,8 +297,8 @@ class ReuseMLP(Qwen2MLP):
 		self.use_similarity = use_similarity
 
 		# self.quantizer = BlockQuantize(group_size=16)
-		self.quant_type = "int8"
-		self.quantizer = WeightGroupQuantizer(group_size=16, mode=self.quant_type)
+		self.quant_type = "int4"
+		self.quantizer = WeightGroupQuantizer(group_size=32, mode=self.quant_type)
 
 		self.gate_proj_q = None
 		self.gate_proj_s = None

@@ -769,6 +769,133 @@ class TrickAttention:
 
       return torch.cat(outputs, dim=0) # (total_q, n_heads, d)
   
+  def naive_varlen_sparse_quant_attention_cfg_self(
+      self,
+      packed_query_states,   # (total_q, n_heads, head_dim)
+      merged_key_states,     # (total_k, n_kv_heads, head_dim)
+      merged_value_states,   # (total_k, n_kv_heads, head_dim)
+      cu_seqlens_q,          # (B+1,)
+      cu_seqlens_k,          # (B+1,)
+      causal: bool,
+      kv_cache: Optional[KVCacheStructure] = None,
+      mode: str = "und",
+      timestep: Optional[int] = None,
+      layer_idx: Optional[int] = None,
+      cfg_type: Optional[str] = None,
+  ):
+      outputs = []
+      B = cu_seqlens_q.numel() - 1
+      D = packed_query_states.shape[-1]
+      min_threshold = self.posterior_truncate_threshold
+
+      num_q_heads = packed_query_states.size(1)
+      num_kv_heads = merged_key_states.size(1)
+      if num_q_heads != num_kv_heads:
+          if num_q_heads % num_kv_heads != 0:
+              raise ValueError(
+                  f"Grouped-query attention mismatch: {num_q_heads=} is not a multiple of {num_kv_heads=}."
+              )
+          group_size = num_q_heads // num_kv_heads
+          merged_key_states = merged_key_states.repeat_interleave(group_size, dim=1)
+          merged_value_states = merged_value_states.repeat_interleave(group_size, dim=1)
+
+      for b in range(B):
+          q_start, q_end = cu_seqlens_q[b].item(), cu_seqlens_q[b + 1].item()
+          k_start, k_end = cu_seqlens_k[b].item(), cu_seqlens_k[b + 1].item()
+
+          q = packed_query_states[q_start:q_end]          # (Lq, n_heads, d)
+          k = merged_key_states[k_start:k_end]            # (Lk, n_kv_heads, d)
+          v = merged_value_states[k_start:k_end]          # (Lk, n_kv_heads, d)
+
+          q_bmm = q.transpose(0, 1)  # (n_heads, Lq, d)
+          k_bmm = k.transpose(0, 1)  # (n_heads, Lk, d)
+          v_bmm = v.transpose(0, 1)  # (n_heads, Lk, d)
+
+          # q_bmm_quant_fp4, q_quant_scale = self.block_quantizer.quantize_int4(q_bmm)
+          q_bmm_quant_fp4, q_quant_scale = self.block_quantizer.quantize_nvfp4(q_bmm)
+
+          attn_scores = torch.bmm(q_bmm, k_bmm.transpose(1, 2) / math.sqrt(D)) # (n_heads, Lq, Lk)
+          ref_attn_probs = torch.softmax(attn_scores, dim=-1) # (n_heads, Lq, Lk)
+          ref_mask = ref_attn_probs < min_threshold
+
+          attn_scores_q_quant_fp4 = torch.bmm(q_bmm_quant_fp4, k_bmm.transpose(1, 2) / math.sqrt(D)) # (n_heads, Lq, Lk)
+          assert attn_scores_q_quant_fp4.shape == attn_scores.shape, "Quantized attention scores shape mismatch."
+
+          mask_sparse = attn_scores.new_zeros(attn_scores.size(), dtype=torch.bool)
+          representative_attn_scores = None
+          q_range_tensor = torch.tensor([0, q_bmm.size(1)], device=q_bmm.device, dtype=torch.long)
+          
+          if kv_cache is not None:
+            # vae_vit_range = self.get_vae_vit_range(kv_cache)
+            # vae_range = self.get_vae_range(kv_cache)
+            # vit_range = self.get_vit_range(kv_cache)
+            self_range = self.get_self_range(kv_cache)
+            cfg_txt_self_range = self.get_cfg_txt_self_range(kv_cache)
+            # cfg_img_self_range = self.get_cfg_img_self_range(kv_cache)
+
+            if self_range is not None:
+              if mode == "gen" and timestep is not None and timestep >= 0 and cfg_type is not None and (cfg_type == "normal" or cfg_type == "cfg_text" or cfg_type == "cfg_img"):
+                assert cfg_type != "cfg_img", "CFG image self-attention only sparse-quant not implemented yet."
+                if cfg_type == "normal":
+                  self_range_tensor = torch.tensor(self_range, device=q_bmm.device, dtype=torch.long)
+                  self_mask, representative_attn_scores = self.block_sparsifier.sparsify_kv_cache_threshold_self_fine(q_bmm, k_bmm, self_range_tensor)
+                  self_mask = self_mask.to(torch.bool)
+                  if self.self_attn:
+                    self_attn_mask = self_mask
+                    self.sparsity[cfg_type][1][timestep][layer_idx] = torch.mean(self_attn_mask.float()).item()
+                    attn_scores[:, :, self_range_tensor[0]:self_range_tensor[1]] = torch.where(self_attn_mask, attn_scores_q_quant_fp4[:, :, self_range_tensor[0]:self_range_tensor[1]], attn_scores[:, :, self_range_tensor[0]:self_range_tensor[1]])
+                elif cfg_type == "cfg_text":
+                  self_range_tensor = torch.tensor(cfg_txt_self_range, device=q_bmm.device, dtype=torch.long)
+                  self_mask, representative_attn_scores = self.block_sparsifier.sparsify_kv_cache_threshold_self_fine(q_bmm, k_bmm, self_range_tensor)
+                  self_mask = self_mask.to(torch.bool)
+                  if self.self_attn:
+                    self_attn_mask = self_mask
+                    self.sparsity[cfg_type][1][timestep][layer_idx] = torch.mean(self_attn_mask.float()).item()
+                    attn_scores[:, :, self_range_tensor[0]:self_range_tensor[1]] = torch.where(self_attn_mask, attn_scores_q_quant_fp4[:, :, self_range_tensor[0]:self_range_tensor[1]], attn_scores[:, :, self_range_tensor[0]:self_range_tensor[1]])
+
+          if causal:
+              Lq, Lk = attn_scores.size(1), attn_scores.size(2)
+              if Lq > 1:
+                  q_indices = torch.arange(Lq, device=attn_scores.device).unsqueeze(1)
+                  k_indices = torch.arange(Lk, device=attn_scores.device).unsqueeze(0)
+                  
+                  causal_mask_shift = Lk - Lq
+                  mask = k_indices > (q_indices + causal_mask_shift)
+                  
+                  attn_scores.masked_fill_(mask, float("-inf"))
+
+          attn_scores_masked = attn_scores.masked_fill(mask_sparse, float("-inf"))
+          # attn_scores = attn_scores.masked_fill(mask_sparse, float("-inf"))
+          attn_probs = torch.softmax(attn_scores_masked, dim=-1) # (n_heads, Lq, Lk)
+          
+          if self.is_plot and mode == "gen" and timestep is not None and timestep >= 0:
+            plot_mask_heads(representative_attn_scores, heads=self.heads_to_plot, out_dir=self.plot_dir,
+                            filename=f"sparse_mask_layer_{layer_idx}_ts_{timestep}_batch_{b}.png",
+                            ncols=6, cmap="inferno_r", tick_density=100, norm="log",
+                            box_coords=None, box_style=None, figsize_per_plot=(5,5))
+
+          should_save = layer_idx is not None and self.is_save and timestep is not None and timestep >= 0
+          if should_save:
+            entry_to_save = {
+                "q": q_bmm.cpu(),
+                # "k": k_bmm.cpu(),
+                # "v": v_bmm.cpu(),
+                # "attn_probs": attn_probs.cpu(),
+                # "data": attn_probs.cpu()
+            }
+            self.save(
+              entry_to_save=entry_to_save, mode=mode, 
+              timestep=timestep, layer_idx=layer_idx, 
+              batch_idx=b, cfg_type=cfg_type
+            )
+          
+          context_bmm = torch.bmm(attn_probs, v_bmm) # (n_heads, Lq, d)
+          context = context_bmm.transpose(0, 1) # (Lq, n_heads, d)
+
+          outputs.append(context)
+
+      return torch.cat(outputs, dim=0) # (total_q, n_heads, d)
+
   def naive_varlen_sparse_quant_attention_cfg(
       self,
       packed_query_states,   # (total_q, n_heads, head_dim)
@@ -1102,6 +1229,8 @@ class TrickAttention:
       return self.naive_varlen_sparse_quant_attention_v2(**kwargs)
     elif self.attention_backend == "naive_sparse_quant_cfg_v2":
       return self.naive_varlen_sparse_quant_attention_cfg_v2(**kwargs)
+    elif self.attention_backend == "naive_sparse_quant_cfg_self":
+      return self.naive_varlen_sparse_quant_attention_cfg_self(**kwargs)
     else:
       raise ValueError(f"Unsupported attention backend: {self.attention_backend}")
 

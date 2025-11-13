@@ -26,6 +26,8 @@ from safetensors.torch import load_file
 
 from data.transforms import ImageTransform
 
+from modeling.basic.util import MLPArgs
+from modeling.basic.attention import TrickAttention
 
 def load_model_and_tokenizer(args):
     llm_config = Qwen2Config.from_json_file(os.path.join(args.model_path, "llm_config.json"))
@@ -62,6 +64,40 @@ def load_model_and_tokenizer(args):
 
     return model, tokenizer, new_token_ids
 
+def load_model_and_tokenizer_my(args,  base_attn: TrickAttention, mlp_args: MLPArgs):
+    llm_config = Qwen2Config.from_json_file(os.path.join(args.model_path, "llm_config.json"))
+    llm_config.qk_norm = True
+    llm_config.tie_word_embeddings = False
+    llm_config.layer_module ="Qwen2MoTDecoderLayer"
+
+    vit_config = SiglipVisionConfig.from_json_file(os.path.join(args.model_path, "vit_config.json"))
+    vit_config.rope = False
+    vit_config.num_hidden_layers = vit_config.num_hidden_layers - 1
+
+    config = BagelConfig(
+        visual_gen=False,
+        visual_und=True,
+        llm_config=llm_config, 
+        vit_config=vit_config,
+        vit_max_num_patch_per_side=70,
+        connector_act='gelu_pytorch_tanh',
+    )
+    language_model = Qwen2ForCausalLM(llm_config, mlp_args=mlp_args, trick_attn=base_attn)
+    vit_model = SiglipVisionModel(vit_config)
+    model = Bagel(language_model, vit_model, config)
+    model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config)
+
+    tokenizer = Qwen2Tokenizer.from_pretrained(args.model_path)
+    tokenizer, new_token_ids, _ = add_special_tokens(tokenizer)
+
+    model_state_dict_path = os.path.join(args.model_path, "ema.safetensors")
+    model_state_dict = load_file(model_state_dict_path, device="cpu")
+    msg = model.load_state_dict(model_state_dict, strict=False)
+    print(msg)
+    del model_state_dict
+    model = model.cuda().eval()
+
+    return model, tokenizer, new_token_ids
 
 def build_transform():
     with open("./data/configs/example.yaml", "r") as f:

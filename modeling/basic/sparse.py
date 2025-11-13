@@ -187,7 +187,7 @@ class BlockSparsify:
 
 		pre_self_k = k[:, 0:self_range[0], :]
 		self_k = k[:, self_range[0]:self_range[1], :]
-		assert(self_range[1] == N)
+		assert(self_range[1] == N), f"self_range end {self_range[1]} must equal to N {N}"
 
 		pre_self_k_padded, pre_self_k_padded_len = self.padding(pre_self_k, group_size)
 		self_k_padded, self_k_padded_len = self.padding(self_k, group_size)

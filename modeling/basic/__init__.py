@@ -56,23 +56,31 @@ class KVCacheStructure:
 		print(f"  CFG Text + Gen Image: {self.cfg_text_gen_image}")
 		print(f"  CFG Img + Gen Image: {self.cfg_img_gen_image}")
 
-	def calculate_gen_image(self, cfg_img_use_thinking: bool = False):
-		if self.system_prompt and self.vae and self.vit and self.input_prompt and self.gen_text:
-			start = None
-			end = None
-			if self.gen_text:
-				start = self.gen_text[1] + 1
-				end = start + self.vae[1] - self.vae[0]
-				self.gen_image = (start, end)
-			else:
+	def calculate_gen_image(self, cfg_img_use_thinking: bool = False, task_mode: str = "editing", image_token_len: Optional[int] = None):
+		if task_mode == "editing":
+			if self.system_prompt and self.vae and self.vit and self.input_prompt and self.gen_text:
+				start = None
+				end = None
+				if self.gen_text:
+					start = self.gen_text[1] + 1
+					end = start + self.vae[1] - self.vae[0]
+					self.gen_image = (start, end)
+				else:
+					start = self.input_prompt[1] + 1
+					end = start + self.vae[1] - self.vae[0]
+					self.gen_image = (start, end)
+				self.cfg_text_gen_image = (self.vit[1]+1, self.vit[1]+1+(end-start))
+				input_prompt_len = self.input_prompt[1] - self.input_prompt[0] + 1
+				system_prompt_len = self.system_prompt[1] - self.system_prompt[0] + 1
+				pre_len = system_prompt_len + input_prompt_len
+				if cfg_img_use_thinking:
+					pre_len += (self.gen_text[1] - self.gen_text[0] + 1)
+				self.cfg_img_gen_image = (pre_len, pre_len + (end - start))
+				self.len = end + 1
+		elif task_mode == "generation":
+			if self.input_prompt and image_token_len is not None:
 				start = self.input_prompt[1] + 1
-				end = start + self.vae[1] - self.vae[0]
+				end = start + image_token_len - 1
 				self.gen_image = (start, end)
-			self.cfg_text_gen_image = (self.vit[1]+1, self.vit[1]+1+(end-start))
-			input_prompt_len = self.input_prompt[1] - self.input_prompt[0] + 1
-			system_prompt_len = self.system_prompt[1] - self.system_prompt[0] + 1
-			pre_len = system_prompt_len + input_prompt_len
-			if cfg_img_use_thinking:
-				pre_len += (self.gen_text[1] - self.gen_text[0] + 1)
-			self.cfg_img_gen_image = (pre_len, pre_len + (end - start))
-			self.len = end + 1
+				self.len = end + 1
+				self.cfg_text_gen_image = (0, image_token_len-1)
