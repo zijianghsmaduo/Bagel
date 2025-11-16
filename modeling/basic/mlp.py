@@ -277,7 +277,7 @@ class TilingDownLinear:
 
 
 class ReuseMLP(Qwen2MLP):
-	def __init__(self, config, use_quantized_w: bool = False, use_similarity: bool = False):
+	def __init__(self, config, use_quantized_und_w: bool = False, use_quantized_gen_w: bool = False, use_similarity: bool = False):
 		super().__init__(config)
 		self.tiling_up_proj = TilingUpLinear()
 		self.tiling_gate_proj = TilingUpLinear()
@@ -293,19 +293,24 @@ class ReuseMLP(Qwen2MLP):
 		self.rtol = 1e-2
 		self.atol = 1e-3
 		
-		self.use_quantized_w = use_quantized_w
+		self.use_quantized_und_w = use_quantized_und_w
+		self.use_quantized_gen_w = use_quantized_gen_w
 		self.use_similarity = use_similarity
 
 		# self.quantizer = BlockQuantize(group_size=16)
 		self.quant_type = "int4"
 		self.quantizer = WeightGroupQuantizer(group_size=32, mode=self.quant_type)
 
-		self.gate_proj_q = None
-		self.gate_proj_s = None
-		self.up_proj_q = None
-		self.up_proj_s = None
-		self.down_proj_q = None
-		self.down_proj_s = None
+		self.gate_weight_q = None
+		self.gate_weight_s = None
+		self.up_weight_q = None
+		self.up_weight_s = None
+		self.down_weight_q = None
+		self.down_weight_s = None
+
+
+		self.nr_cfg = 3
+		self.cfg_count = 0
 		
 	@staticmethod
 	def quantize_up_weight(weight: torch.Tensor, quantizer: BlockQuantize, nr_head: int, quant_type: str) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -349,94 +354,289 @@ class ReuseMLP(Qwen2MLP):
 
 		return cosine_similarity
 
+	def compute_msb_similarity(self, tensor_a: torch.Tensor, tensor_b: torch.Tensor) -> torch.Tensor:
+		assert tensor_a.shape == tensor_b.shape, "Input tensors must have the same shape."
+		N, D = tensor_a.shape
+		H = self.nr_head
+		d = D // H
+
+		tensor_a_reshaped = tensor_a.view(N, H, d).permute(1, 0, 2)  # (H, N, d)
+		tensor_b_reshaped = tensor_b.view(N, H, d).permute(1, 0, 2)  # (H, N, d)
+
+		msb_a = (tensor_a_reshaped.abs() >= 0.5).float()  # (H, N, d)
+		msb_b = (tensor_b_reshaped.abs() >= 0.5).float()  # (H, N, d)
+
+		matching_bits = (msb_a == msb_b).float().sum(dim=-1)  # (H, N)
+		similarity_score = matching_bits / d  # (H, N)
+
+		return similarity_score
+	
+	# def compute_sign_similarity
+
 	def gen_similarity_mask(self, hidden_state: torch.Tensor):
 		if self.normal_act_cache is None:
 			raise ValueError("Normal activation cache is empty.")
 		cosine_sim = self.compute_cosine_similarity(hidden_state, self.normal_act_cache)  # (H, N)
 		similarity_mask = cosine_sim > self.cos_threshold  # (H, N)
 		return similarity_mask
+	
+	def compute_consine_similarity_full_head(self, tensor_a: torch.Tensor, tensor_b: torch.Tensor) -> torch.Tensor:
+		assert tensor_a.shape == tensor_b.shape, "Input tensors must have the same shape."
+		N, D = tensor_a.shape
+		tensor_a = tensor_a.to(torch.float32)
+		tensor_b = tensor_b.to(torch.float32)
 
-	def forward(self, hidden_state: torch.Tensor, *, use_quantized_w: bool = False, sparsity: Optional[np.ndarray] = None, cfg_type: Optional[str] = None, layer_idx: Optional[int] = None, timestep: Optional[int] = None) -> torch.Tensor:
+		numerator = (tensor_a * tensor_b).sum(dim=-1)  # (N,)
+		denominator = torch.norm(tensor_a, dim=-1) * torch.norm(tensor_b, dim=-1)  # (N,)
+		denominator = torch.where(denominator == 0, torch.tensor(1e-8, device=denominator.device), denominator)
+		cosine_similarity = numerator / denominator  # (N,)
+
+		assert(cosine_similarity.shape == (N,)), "Cosine similarity output has incorrect shape."
+		return cosine_similarity
+
+	def get_similarity_mask_full_head(self, hidden_state: torch.Tensor):
+		if self.normal_act_cache is None:
+			raise ValueError("Normal activation cache is empty.")
+		cosine_sim = self.compute_consine_similarity_full_head(hidden_state, self.normal_act_cache)  # (N,)
+		similarity_mask = cosine_sim > self.cos_threshold  # (N,)
+		return similarity_mask
+
+	def reset_und_weight_cache(self):
+		self.gate_weight_q, self.gate_weight_s = self.quantizer.simulate_quantization(self.gate_proj.weight.data)
+		self.up_weight_q, self.up_weight_s = self.quantizer.simulate_quantization(self.up_proj.weight.data)
+		self.down_weight_q, self.down_weight_s = self.quantizer.simulate_quantization(self.down_proj.weight.data)
+
+	def reset_gen_weight_cache(self):
+		self.gate_weight_q, self.gate_weight_s = self.quantizer.simulate_quantization(self.gate_proj.weight.data)
+		self.up_weight_q, self.up_weight_s = self.quantizer.simulate_quantization(self.up_proj.weight.data)
+		self.down_weight_q, self.down_weight_s = self.quantizer.simulate_quantization(self.down_proj.weight.data)
+
+		self.gate_weight_q = torch.cat((self.gate_weight_q[:self.gate_weight_q.shape[0]//2, :], self.gate_proj.weight[self.gate_proj.weight.shape[0]//2:, :]), dim=0)
+		assert self.gate_weight_q.shape == self.gate_proj.weight.shape, "Gate projection quantized weight shape mismatch."
+		self.up_weight_q = torch.cat((self.up_weight_q[:self.up_weight_q.shape[0]//2, :], self.up_proj.weight[self.up_proj.weight.shape[0]//2:, :]), dim=0)
+		assert self.up_weight_q.shape == self.up_proj.weight.shape, "Up projection quantized weight shape mismatch."
+		self.down_weight_q = torch.cat((self.down_weight_q[:self.down_weight_q.shape[0]//2, :], self.down_proj.weight[self.down_proj.weight.shape[0]//2:, :]), dim=0)
+		assert self.down_weight_q.shape == self.down_proj.weight.shape, "Down projection quantized weight shape mismatch."
+
+	def get_gen_quant_weight(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+		gate_weight_q, _ = self.quantizer.simulate_quantization(self.gate_proj.weight.data)
+		up_weight_q, _ = self.quantizer.simulate_quantization(self.up_proj.weight.data)
+		down_weight_q, _ = self.quantizer.simulate_quantization(self.down_proj.weight.data)
+
+		gate_weight_q = torch.cat((gate_weight_q[:gate_weight_q.shape[0]//2, :], self.gate_proj.weight[self.gate_proj.weight.shape[0]//2:, :]), dim=0)
+		assert gate_weight_q.shape == self.gate_proj.weight.shape, "Gate projection quantized weight shape mismatch."
+		up_weight_q = torch.cat((up_weight_q[:up_weight_q.shape[0]//2, :], self.up_proj.weight[self.up_proj.weight.shape[0]//2:, :]), dim=0)
+		assert up_weight_q.shape == self.up_proj.weight.shape, "Up projection quantized weight shape mismatch."
+		down_weight_q = torch.cat((down_weight_q[:down_weight_q.shape[0]//2, :], self.down_proj.weight[self.down_proj.weight.shape[0]//2:, :]), dim=0)
+		assert down_weight_q.shape == self.down_proj.weight.shape, "Down projection quantized weight shape mismatch."
+
+		return gate_weight_q, up_weight_q, down_weight_q
+
+	def clean_activation_cache(self):
+		del self.normal_act_cache
+		self.normal_act_cache = None
+
+	def update_cfg_count(self):
+		self.cfg_count = self.cfg_count + 1
+		if self.cfg_count % self.nr_cfg == 0:
+			print("Clearing activation cache after CFG steps.")
+			self.clean_activation_cache()
+			self.cfg_count = 0
+
+	def forward(
+		self, 
+		hidden_state: torch.Tensor,
+		*, 
+		use_quantized_w: bool = False, 
+		sparsity: Optional[np.ndarray] = None, 
+		cfg_type: Optional[str] = None, 
+		layer_idx: Optional[int] = None, 
+		timestep: Optional[int] = None,
+		full_head_mask: bool = False,
+	) -> torch.Tensor:
 		if cfg_type is None or self.use_similarity is False:
-			if use_quantized_w and self.use_quantized_w:
-				if self.gate_proj_q is None:
-					self.gate_proj_q, self.gate_proj_s = self.quantizer.simulate_quantization(self.gate_proj.weight.data)
-					self.up_proj_q, self.up_proj_s = self.quantizer.simulate_quantization(self.up_proj.weight.data)
-					self.down_proj_q, self.down_proj_s = self.quantizer.simulate_quantization(self.down_proj.weight.data)
-					# self.gate_proj_q, self.gate_proj_s = self.quantize_up_weight(self.gate_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
-					# self.up_proj_q, self.up_proj_s = self.quantize_up_weight(self.up_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
-					# self.down_proj_q, self.down_proj_s = self.quantize_down_weight(self.down_proj.weight.data, self.quantizer, self.nr_head, self.quant_type)
+			if use_quantized_w and self.use_quantized_und_w:
+				if self.gate_weight_q is None:
+					self.reset_und_weight_cache()
 
-					# self.gate_proj_q = self.gate_proj.weight
-					# self.up_proj_q = self.up_proj.weight
-					# self.down_proj_q = self.down_proj.weight
-				assert self.gate_proj_q is not None, "Quantized gate projection weights are not initialized."
-				assert self.up_proj_q is not None, "Quantized up projection weights are not initialized."
-				assert self.down_proj_q is not None, "Quantized down projection weights are not initialized."
+				assert self.gate_weight_q is not None, "Quantized gate projection weights are not initialized."
+				assert self.up_weight_q is not None, "Quantized up projection weights are not initialized."
+				assert self.down_weight_q is not None, "Quantized down projection weights are not initialized."
 
-				gated_o = torch.nn.functional.linear(hidden_state, self.gate_proj_q)
-				up_o = torch.nn.functional.linear(hidden_state, self.up_proj_q)
+				gated_o = torch.nn.functional.linear(hidden_state, self.gate_weight_q)
+				up_o = torch.nn.functional.linear(hidden_state, self.up_weight_q)
 				gated_value = self.act_fn(gated_o) * up_o
-				return torch.nn.functional.linear(gated_value, self.down_proj_q)
+				return torch.nn.functional.linear(gated_value, self.down_weight_q)
 			else:
 				return super().forward(hidden_state)
 		elif cfg_type == "normal":
-			self.normal_act_cache = hidden_state
+			if use_quantized_w and self.use_quantized_gen_w:
+				# if self.gate_weight_q is None or self.state != "gen":
+				# 	self.reset_gen_weight_cache()
+				# 	self.state = "gen"
+				# assert self.gate_weight_q is not None, "Quantized gate projection weights are not initialized."
+				# assert self.up_weight_q is not None, "Quantized up projection weights are not initialized."
+				# assert self.down_weight_q is not None, "Quantized down projection weights are not initialized."
 
-			# --- Gate & Up Projections ---
-			gated_tiling_o = self.tiling_gate_proj.forward(hidden_state, self.gate_proj.weight, self.nr_head)
-			gated_o = torch.sum(gated_tiling_o, dim=0).to(dtype=hidden_state.dtype)
+				gated_weight_q, up_weight_q, down_weight_q = self.get_gen_quant_weight()
 
-			gated_act_o = self.act_fn(gated_o)
-			
-			up_tiling_o = self.tiling_up_proj.forward(hidden_state, self.up_proj.weight, self.nr_head)
-			up_o = torch.sum(up_tiling_o, dim=0).to(dtype=hidden_state.dtype)
+				# print(f"{layer_idx}: Caching normal activation.")
+				self.normal_act_cache = hidden_state
+				
+				gated_o = torch.nn.functional.linear(hidden_state, gated_weight_q)
+				up_o = torch.nn.functional.linear(hidden_state, up_weight_q)
+				gated_value = self.act_fn(gated_o) * up_o
+				
+				# self.update_cfg_count()
+				return torch.nn.functional.linear(gated_value, down_weight_q)
+			else:
+				self.normal_act_cache = hidden_state
 
-			# calculate_and_print_error(
-			#         gated_o, self.gate_proj(hidden_state), "Gate Projection", self.rtol, self.atol
-			# )
-			# calculate_and_print_error(
-			#         up_o, self.up_proj(hidden_state), "Up Projection", self.rtol, self.atol
-			# )
-
-			gated_value_standard = (gated_act_o * up_o).to(dtype=hidden_state.dtype)
-			
-			down_o, _ = self.tiling_down_proj.forward(gated_value_standard, self.down_proj.weight, self.nr_head)
-
-			return down_o
+				return super().forward(hidden_state)
 		elif cfg_type == "cfg_text" or cfg_type == "cfg_img":
 			assert self.normal_act_cache is not None, "Normal activation cache is empty."
 			assert layer_idx is not None, "Layer index must be provided for CFG mode."
 			assert timestep is not None, "Timestep must be provided for CFG mode."
 			assert sparsity is not None, "Sparsity array must be provided for CFG mode."
 
-			## True means replace with cache
-			similarity_mask = self.gen_similarity_mask(hidden_state)  # (H, N)
-			sparsity[cfg_type][timestep, layer_idx] = similarity_mask.float().mean().item()
+			if full_head_mask:
+				# print("Using full head similarity mask.")
+				similarity_mask = self.get_similarity_mask_full_head(hidden_state)  # (N,)
+				sparsity[cfg_type][timestep, layer_idx] = similarity_mask.float().mean().item()
 
-			gated_proj_cache_gpu = self.tiling_gate_proj.forward(self.normal_act_cache, self.gate_proj.weight, self.nr_head)
-			gated_tiling_o = self.tiling_gate_proj.forward(hidden_state, self.gate_proj.weight, self.nr_head)
-			gated_tiling_o = torch.where(
+				gated_proj_cache_gpu = self.gate_proj.forward(self.normal_act_cache)
+				gated_o = self.gate_proj.forward(hidden_state)
+				gated_o = torch.where(
 					similarity_mask.unsqueeze(-1),
 					gated_proj_cache_gpu,
-					gated_tiling_o
-			)
-			gated_o = torch.sum(gated_tiling_o, dim=0)
-			gated_act_o = self.act_fn(gated_o)
-
-			up_proj_cache_gpu = self.tiling_up_proj.forward(self.normal_act_cache, self.up_proj.weight, self.nr_head)
-			up_tiling_o = self.tiling_up_proj.forward(hidden_state, self.up_proj.weight, self.nr_head)
-			up_tiling_o = torch.where(
+					gated_o
+				)
+				up_proj_cache_gpu = self.up_proj.forward(self.normal_act_cache)
+				up_o = self.up_proj.forward(hidden_state)
+				up_o = torch.where(
 					similarity_mask.unsqueeze(-1),
 					up_proj_cache_gpu,
-					up_tiling_o
-			)
-			up_o = torch.sum(up_tiling_o, dim=0)
+					up_o
+				)
+				gated_act_o = self.act_fn(gated_o)
+				gated_value_similarity = (gated_act_o * up_o).to(dtype=hidden_state.dtype)
 
-			gated_value_similarity = (gated_act_o * up_o).to(dtype=hidden_state.dtype)
+				down_o = self.down_proj.forward(gated_value_similarity)
 
-			down_o, _ = self.tiling_down_proj.forward(gated_value_similarity, self.down_proj.weight, self.nr_head)
+				return down_o
+			else:
+				if use_quantized_w and self.use_quantized_gen_w:
+					gated_weight_q, up_weight_q, down_weight_q = self.get_gen_quant_weight()
+					
+					similarity_mask = self.gen_similarity_mask(hidden_state)  # (H, N)
+					sparsity[cfg_type][timestep, layer_idx] = similarity_mask.float().mean().item()
 
-			return down_o
+					gated_proj_cache_gpu_q = self.tiling_gate_proj.forward(self.normal_act_cache, gated_weight_q, self.nr_head)
+					gated_tiling_o_q = self.tiling_gate_proj.forward(hidden_state, gated_weight_q, self.nr_head)
+					gated_tiling_o_q = torch.where(
+							similarity_mask.unsqueeze(-1),
+							gated_proj_cache_gpu_q,
+							gated_tiling_o_q
+					)
+
+					up_proj_cache_gpu_q = self.tiling_up_proj.forward(self.normal_act_cache, up_weight_q, self.nr_head)
+					up_tiling_o_q = self.tiling_up_proj.forward(hidden_state, up_weight_q, self.nr_head)
+					
+					up_tiling_o_q = torch.where(
+							similarity_mask.unsqueeze(-1),
+							up_proj_cache_gpu_q,
+							up_tiling_o_q
+					)
+
+					gated_o = torch.sum(gated_tiling_o_q, dim=0)
+					gated_act_o = self.act_fn(gated_o)
+					up_o = torch.sum(up_tiling_o_q, dim=0)
+
+					gated_value_similarity = (gated_act_o * up_o).to(dtype=hidden_state.dtype)
+
+					down_o_q = torch.nn.functional.linear(gated_value_similarity, down_weight_q)
+
+					# self.update_cfg_count()
+					return down_o_q
+
+
+					# if self.gate_weight_q is None or self.state != "gen":
+					# 	self.reset_gen_weight_cache()
+					# 	self.state = "gen"
+					# assert self.gate_weight_q is not None, "Quantized gate projection weights are not initialized."
+					# assert self.up_weight_q is not None, "Quantized up projection weights are not initialized."
+					# assert self.down_weight_q is not None, "Quantized down projection weights are not initialized."
+
+					## True means replace with cache
+					# similarity_mask = self.gen_similarity_mask(hidden_state)  # (H, N)
+					# sparsity[cfg_type][timestep, layer_idx] = similarity_mask.float().mean().item()
+
+					# gated_proj_cache_gpu_q = self.tiling_gate_proj.forward(self.normal_act_cache, self.gate_weight_q, self.nr_head)
+					# gated_tiling_o_q = self.tiling_gate_proj.forward(hidden_state, self.gate_weight_q, self.nr_head)
+					# gated_tiling_o_q = torch.where(
+					# 		similarity_mask.unsqueeze(-1),
+					# 		gated_proj_cache_gpu_q,
+					# 		gated_tiling_o_q
+					# )
+
+					# up_proj_cache_gpu_q = self.tiling_up_proj.forward(self.normal_act_cache, self.up_weight_q, self.nr_head)
+					# up_tiling_o_q = self.tiling_up_proj.forward(hidden_state, self.up_weight_q, self.nr_head)
+					
+					# up_tiling_o_q = torch.where(
+					# 		similarity_mask.unsqueeze(-1),
+					# 		up_proj_cache_gpu_q,
+					# 		up_tiling_o_q
+					# )
+
+					# gated_o = torch.sum(gated_tiling_o_q, dim=0)
+					# gated_act_o = self.act_fn(gated_o)
+					# up_o = torch.sum(up_tiling_o_q, dim=0)
+
+					# gated_value_similarity = (gated_act_o * up_o).to(dtype=hidden_state.dtype)
+
+					# down_o_q = torch.nn.functional.linear(gated_value_similarity, self.down_weight_q)
+
+					# self.update_cfg_count()
+					# return down_o_q
+				else:
+					## True means replace with cache
+					similarity_mask = self.gen_similarity_mask(hidden_state)  # (H, N)
+					sparsity[cfg_type][timestep, layer_idx] = similarity_mask.float().mean().item()
+
+					gated_proj_cache_gpu = self.tiling_gate_proj.forward(self.normal_act_cache, self.gate_proj.weight, self.nr_head)
+					gated_tiling_o = self.tiling_gate_proj.forward(hidden_state, self.gate_proj.weight, self.nr_head)
+					gated_tiling_o = torch.where(
+							similarity_mask.unsqueeze(-1),
+							gated_proj_cache_gpu,
+							gated_tiling_o
+					)
+
+					up_proj_cache_gpu = self.tiling_up_proj.forward(self.normal_act_cache, self.up_proj.weight, self.nr_head)
+					up_tiling_o = self.tiling_up_proj.forward(hidden_state, self.up_proj.weight, self.nr_head)
+					
+					# for h in range(self.nr_head):
+					# 	# 获取当前头的掩码切片
+					# 	mask_slice = similarity_mask[h].unsqueeze(0).unsqueeze(-1).expand_as(gated_tiling_o[h:h+1])
+						
+					# 	# 对当前头的张量切片进行原地赋值
+					# 	gated_tiling_o[h:h+1][mask_slice] = gated_proj_cache_gpu[h:h+1][mask_slice]
+					# 	up_tiling_o[h:h+1][mask_slice] = up_proj_cache_gpu[h:h+1][mask_slice]
+					
+					up_tiling_o = torch.where(
+							similarity_mask.unsqueeze(-1),
+							up_proj_cache_gpu,
+							up_tiling_o
+					)
+
+					gated_o = torch.sum(gated_tiling_o, dim=0)
+					gated_act_o = self.act_fn(gated_o)
+					up_o = torch.sum(up_tiling_o, dim=0)
+
+					gated_value_similarity = (gated_act_o * up_o).to(dtype=hidden_state.dtype)
+
+					# down_o, _ = self.tiling_down_proj.forward(gated_value_similarity, self.down_proj.weight, self.nr_head)
+					down_o = self.down_proj.forward(gated_value_similarity)
+
+					return down_o
 		else:
 			raise ValueError(f"Unsupported cfg_type: {cfg_type}")

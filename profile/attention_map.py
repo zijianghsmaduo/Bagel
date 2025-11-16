@@ -719,6 +719,23 @@ def compute_cosine_similarity(tensor1, tensor2):
     cosine_similarity = torch.where(denominator == 0, torch.tensor(0.0, device=denominator.device), cosine_similarity)
     return cosine_similarity
 
+def compute_cosine_similarity_full_head(tensor1, tensor2):
+    assert tensor1.shape == tensor2.shape, "Input tensors must have the same shape."
+    H, L, D = tensor1.shape
+    tensor1 = tensor1.to(torch.float32)
+    tensor2 = tensor2.to(torch.float32)
+    tensor1_flat = tensor1.permute(1, 0 ,2).reshape(L, H * D)
+    tensor2_flat = tensor2.permute(1, 0 ,2).reshape(L, H * D)
+    numerator = (tensor1_flat * tensor2_flat).sum(dim=-1)
+    assert numerator.shape == (L,), f"Unexpected numerator shape: {numerator.shape}"
+    denominator = torch.norm(tensor1_flat, dim=-1) * torch.norm(tensor2_flat, dim=-1)
+    assert denominator.shape == (L,), f"Unexpected denominator shape: {denominator.shape}"
+    cosine_similarity = numerator / denominator
+    cosine_similarity = torch.where(denominator == 0, torch.tensor(0.0, device=denominator.device), cosine_similarity)
+    # Expand back to (H, L)
+    cosine_similarity_expanded = cosine_similarity.unsqueeze(0).expand(H, L)
+    return cosine_similarity_expanded
+
 def compute_group_head_cosine_similarity(ref_tensor1, targ_tensor2):
     """
     Computes cosine similarity with a group-wise max-matching logic.
@@ -954,6 +971,9 @@ def cfg_similarity_heatmap(load_dir="attn_probs_qkv_dump", elem='q', name='', he
       elif mode == 'norm_mse':
         similarity_cfg_text = compute_norm_mse_similarity(normal_q, cfg_text_q)
         similarity_cfg_image = compute_norm_mse_similarity(normal_q, cfg_image_q)
+      elif mode == 'cosine_full_head':
+        similarity_cfg_text = compute_cosine_similarity_full_head(normal_q, cfg_text_q)
+        similarity_cfg_image = compute_cosine_similarity_full_head(normal_q, cfg_image_q)
       else:
         raise ValueError(f"Invalid mode: {mode}. Must be 'cosine' or 'mse'.")
       
@@ -1048,8 +1068,8 @@ if __name__ == "__main__":
   parser.add_argument('--layer_bias', type=int, default=28,
                       help="Number of layers to process")
   parser.add_argument('--heads', type=str, default='[-2]')
-  parser.add_argument('--cfg_mode', type=str, choices=['mse', 'group_mse', 'norm_mse', 'cosine', 'group_cosine'], default='mse',
-                      help="Mode for CFG similarity: 'mse', 'group_mse', 'norm_mse', 'cosine' or 'group_cosine'")
+  parser.add_argument('--cfg_mode', type=str, choices=['mse', 'group_mse', 'norm_mse', 'cosine', 'group_cosine', 'cosine_full_head'], default='mse',
+                      help="Mode for CFG similarity: 'mse', 'group_mse', 'norm_mse', 'cosine', 'group_cosine' or 'cosine_full_head'")
   parser.add_argument('--prefix', type=str, default='qkv_attn_probs',
                       help="Prefix for CFG similarity files") 
   parser.add_argument('--sufix', action="store_true",

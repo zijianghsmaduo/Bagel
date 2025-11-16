@@ -747,8 +747,8 @@ class Qwen2MoTDecoderLayer(nn.Module):
 				self.mlp_args = mlp_args
 
 				if mlp_args.use_custom_mlp:
-					self.mlp = ReuseMLP(config, use_quantized_w=mlp_args.use_quantized_w, use_similarity=mlp_args.use_similarity)
-					self.mlp_moe_gen = ReuseMLP(config, use_quantized_w=mlp_args.use_quantized_w, use_similarity=mlp_args.use_similarity)
+					self.mlp = ReuseMLP(config, use_quantized_und_w=mlp_args.use_quantized_und_w, use_quantized_gen_w=mlp_args.use_quantized_gen_w, use_similarity=mlp_args.use_similarity)
+					self.mlp_moe_gen = ReuseMLP(config, use_quantized_und_w=mlp_args.use_quantized_und_w, use_quantized_gen_w=mlp_args.use_quantized_gen_w, use_similarity=mlp_args.use_similarity)
 				else:
 					self.mlp = Qwen2MLP(config)
 					self.mlp_moe_gen = Qwen2MLP(config)
@@ -871,9 +871,17 @@ class Qwen2MoTDecoderLayer(nn.Module):
 						residual = packed_query_sequence
 						if mode == "und":
 								packed_query_sequence = self.post_attention_layernorm(packed_query_sequence)
+								## Custom MLP with quantization
 								if self.mlp_args.use_custom_mlp:
-									use_quantized_w = self.mlp_args.use_quantized_w and timestep is not None and timestep >= 0
-									packed_query_sequence = self.mlp(packed_query_sequence, sparsity=self.mlp_args.sparsity, cfg_type=cfg_type, layer_idx=layer_idx, timestep=timestep, use_quantized_w=use_quantized_w)
+									use_quantized_w = self.mlp_args.use_quantized_und_w and timestep is not None and timestep >= 0
+									packed_query_sequence = self.mlp(
+										packed_query_sequence, 
+										sparsity=self.mlp_args.sparsity, 
+										cfg_type=cfg_type, 
+										layer_idx=layer_idx, 
+										timestep=timestep, 
+										use_quantized_w=use_quantized_w
+									)
 								else:
 									packed_query_sequence = self.mlp(packed_query_sequence)
 						elif mode == "gen":
@@ -910,9 +918,27 @@ class Qwen2MoTDecoderLayer(nn.Module):
 										cfg_type=cfg_type,
 									)
 
+								## Custom MLP with similarity and quantization
 								if self.mlp_args.use_custom_mlp:
-									packed_query_sequence_[packed_text_indexes] = self.mlp(packed_text_query_sequence, sparsity=self.mlp_args.sparsity, cfg_type=cfg_type, layer_idx=layer_idx, timestep=timestep)
-									packed_query_sequence_[packed_vae_token_indexes] = self.mlp_moe_gen(packed_vae_query_sequence, sparsity=self.mlp_args.mot_sparsity, cfg_type=cfg_type, layer_idx=layer_idx, timestep=timestep)
+									use_quantized_w = self.mlp_args.use_quantized_gen_w and timestep is not None and timestep >= 0
+									packed_query_sequence_[packed_text_indexes] = self.mlp(
+										packed_text_query_sequence, 
+										use_quantized_w=use_quantized_w,
+										sparsity=self.mlp_args.sparsity, 
+										full_head_mask=self.mlp_args.use_full_head_similarity, 
+										cfg_type=cfg_type, 
+										layer_idx=layer_idx, 
+										timestep=timestep
+									)
+									packed_query_sequence_[packed_vae_token_indexes] = self.mlp_moe_gen(
+										packed_vae_query_sequence, 
+										use_quantized_w=use_quantized_w,
+										sparsity=self.mlp_args.mot_sparsity,
+										full_head_mask=self.mlp_args.use_full_head_similarity, 
+										cfg_type=cfg_type, 
+										layer_idx=layer_idx, 
+										timestep=timestep
+									)
 								else:
 									packed_query_sequence_[packed_text_indexes] = self.mlp(packed_text_query_sequence)
 									packed_query_sequence_[packed_vae_token_indexes] = self.mlp_moe_gen(packed_vae_query_sequence)

@@ -35,6 +35,7 @@ def process_single_item(item, vie_score, vie_idx, max_retries=10000):
     
     sparsity_csv_path = f"{save_path}/fullset/{group_name}/{instruction_language}/{key}_sparsity.csv"
     similarity_csv_path = f"{save_path}/fullset/{group_name}/{instruction_language}/{key}_similarity.csv"
+    avg_self_attn_csv_path = f"{save_path}/fullset/{group_name}/{instruction_language}/{key}_avg_self_attn.csv"
 
     src_image_path = save_path_fullset_source_image
     save_path_item = save_path_fullset_result_image
@@ -43,6 +44,7 @@ def process_single_item(item, vie_score, vie_idx, max_retries=10000):
     self_attn_sparsity = np.nan
     cfg_text_similarity = np.nan
     cfg_img_similarity = np.nan
+    avg_self_attn_score = np.nan
 
     # --- 新增：读取并解析 sparsity 文件 ---
     try:
@@ -74,6 +76,18 @@ def process_single_item(item, vie_score, vie_idx, max_retries=10000):
     except Exception as e:
         print(f"Warning: Could not read or parse similarity file {similarity_csv_path}. Error: {e}")
 
+    # --- 新增：读取并解析 average_self_attn_score 文件 ---
+    try:
+        if megfile.smart_exists(avg_self_attn_csv_path):
+            with megfile.smart_open(avg_self_attn_csv_path, 'r') as f:
+                df_avg_self_attn = pd.read_csv(f)
+                # 计算所有相关 cfg_type 的总平均分数的平均值
+                relevant_rows = df_avg_self_attn[df_avg_self_attn['cfg_type'].isin(['normal', 'cfg_text', 'cfg_img'])]
+                if not relevant_rows.empty:
+                    avg_self_attn_score = relevant_rows['avg_self_attn_score'].mean()
+    except Exception as e:
+        print(f"Warning: Could not read or parse average_self_attn_score file {avg_self_attn_csv_path}. Error: {e}")
+
 
     # print(f"vie_idx: {vie_idx}")
     
@@ -100,7 +114,8 @@ def process_single_item(item, vie_score, vie_idx, max_retries=10000):
                 "vae_vit_sparsity": vae_vit_sparsity,
                 "self_attn_sparsity": self_attn_sparsity,
                 "cfg_text_similarity": cfg_text_similarity,
-                "cfg_img_similarity": cfg_img_similarity
+                "cfg_img_similarity": cfg_img_similarity,
+                "avg_self_attn_score": avg_self_attn_score
             }
         except Exception as e:
             
@@ -210,7 +225,8 @@ if __name__ == "__main__":
                     "source_image", "edited_image", "instruction", 
                     "sementics_score", "quality_score", "intersection_exist", 
                     "instruction_language", "vae_vit_sparsity", 
-                    "self_attn_sparsity", "cfg_text_similarity", "cfg_img_similarity"
+                    "self_attn_sparsity", "cfg_text_similarity", "cfg_img_similarity",
+                    "avg_self_attn_score"
                 ]
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
@@ -233,7 +249,8 @@ if __name__ == "__main__":
                 "source_image", "edited_image", "instruction", 
                 "sementics_score", "quality_score", "intersection_exist", 
                 "instruction_language", "vae_vit_sparsity", 
-                "self_attn_sparsity", "cfg_text_similarity", "cfg_img_similarity"
+                "self_attn_sparsity", "cfg_text_similarity", "cfg_img_similarity",
+                "avg_self_attn_score"
             ]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()

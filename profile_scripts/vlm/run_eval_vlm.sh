@@ -6,14 +6,14 @@ set -x
 # Set proxy and API key
 export OPENAI_API_KEY=$openai_api_key
 
-export GPUS=2
+export GPUS=1
 
 # DATASETS=("mme" "mmbench-dev-en" "mmvet" "mmmu-val" "mathvista-testmini" "mmvp")
 # DATASETS=("mmmu-val_cot")
 # DATASETS=("mmbench-dev-en")
 DATASETS=("mmbench-test-en")
 
-output_path="./outputs/vlm/mlp_quant_int4"
+output_path="./outputs/vlm/mlp_quant_int4_tmp"
 model_path="./models/BAGEL-7B-MoT"
 
 export ARNOLD_WORKER_NUM=1

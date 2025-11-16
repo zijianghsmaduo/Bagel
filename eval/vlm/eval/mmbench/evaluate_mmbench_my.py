@@ -427,7 +427,7 @@ if __name__ == '__main__':
 
     mlp_args = MLPArgs(
       use_custom_mlp=args.use_custom_mlp,
-      use_quantized_w=args.quantized_mlp_w,
+      use_quantized_und_w=args.quantized_mlp_w,
       use_similarity=args.mlp_use_similarity,
       save_mlp=args.mlp_save,
       save_dir=args.mlp_save_dir

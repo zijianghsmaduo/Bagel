@@ -34,6 +34,7 @@ def analyze_scores(save_path_dir, evaluate_group, language):
     group_scores_self_attn_sparsity = defaultdict(lambda: defaultdict(list))
     group_scores_cfg_text_similarity = defaultdict(lambda: defaultdict(list))
     group_scores_cfg_img_similarity = defaultdict(lambda: defaultdict(list))
+    group_scores_avg_self_attn = defaultdict(lambda: defaultdict(list))
 
     length_total = 0
     save_path_dir_raw = save_path_dir
@@ -54,6 +55,7 @@ def analyze_scores(save_path_dir, evaluate_group, language):
         filtered_self_attn_sparsity = []
         filtered_cfg_text_similarity = []
         filtered_cfg_img_similarity = []
+        filtered_avg_self_attn_score = []
         
         for _, row in df.iterrows():
             source_image = row['source_image']
@@ -69,12 +71,14 @@ def analyze_scores(save_path_dir, evaluate_group, language):
                 self_attn_sparsity = row['self_attn_sparsity']
                 cfg_text_similarity = row['cfg_text_similarity']
                 cfg_img_similarity = row['cfg_img_similarity']
+                avg_self_attn_score = row['avg_self_attn_score']
             except KeyError:
                 # 如果旧的 CSV 文件中没有这些列，则跳过
                 vae_vit_sparsity = np.nan
                 self_attn_sparsity = np.nan
                 cfg_text_similarity = np.nan
                 cfg_img_similarity = np.nan
+                avg_self_attn_score = np.nan
 
             if instruction_language == language:
                 pass
@@ -91,6 +95,7 @@ def analyze_scores(save_path_dir, evaluate_group, language):
             filtered_self_attn_sparsity.append(self_attn_sparsity)
             filtered_cfg_text_similarity.append(cfg_text_similarity)
             filtered_cfg_img_similarity.append(cfg_img_similarity)
+            filtered_avg_self_attn_score.append(avg_self_attn_score)
             if intersection_exist:
                 filtered_semantics_scores_intersection.append(semantics_score)
                 filtered_quality_scores_intersection.append(quality_score)
@@ -106,6 +111,7 @@ def analyze_scores(save_path_dir, evaluate_group, language):
         group_scores_self_attn_sparsity[evaluate_group[0]][group_name] = np.nanmean(filtered_self_attn_sparsity)
         group_scores_cfg_text_similarity[evaluate_group[0]][group_name] = np.nanmean(filtered_cfg_text_similarity)
         group_scores_cfg_img_similarity[evaluate_group[0]][group_name] = np.nanmean(filtered_cfg_img_similarity)
+        group_scores_avg_self_attn[evaluate_group[0]][group_name] = np.nanmean(filtered_avg_self_attn_score)
 
         avg_semantics_score_intersection = np.mean(filtered_semantics_scores_intersection)
         avg_quality_score_intersection = np.mean(filtered_quality_scores_intersection)
@@ -158,12 +164,15 @@ def analyze_scores(save_path_dir, evaluate_group, language):
         group_scores_self_attn_sparsity[model_name]["avg_self_attn_sparsity"] = np.nanmean([group_scores_self_attn_sparsity[model_name][group] for group in GROUPS])
         group_scores_cfg_text_similarity[model_name]["avg_cfg_text_similarity"] = np.nanmean([group_scores_cfg_text_similarity[model_name][group] for group in GROUPS])
         group_scores_cfg_img_similarity[model_name]["avg_cfg_img_similarity"] = np.nanmean([group_scores_cfg_img_similarity[model_name][group] for group in GROUPS])
+        group_scores_avg_self_attn[model_name]["avg_avg_self_attn_score"] = np.nanmean([group_scores_avg_self_attn[model_name][group] for group in GROUPS])
+
 
     return (
         group_scores_semantics, group_scores_quality, group_scores_overall, 
         group_scores_semantics_intersection, group_scores_quality_intersection, group_scores_overall_intersection,
         group_scores_vae_vit_sparsity, group_scores_self_attn_sparsity, 
-        group_scores_cfg_text_similarity, group_scores_cfg_img_similarity
+        group_scores_cfg_text_similarity, group_scores_cfg_img_similarity,
+        group_scores_avg_self_attn
     )
 if __name__ == "__main__":
     import argparse
@@ -187,7 +196,8 @@ if __name__ == "__main__":
             group_scores_semantics, group_scores_quality, group_scores_overall, 
             group_scores_semantics_intersection, group_scores_quality_intersection, group_scores_overall_intersection,
             group_scores_vae_vit_sparsity, group_scores_self_attn_sparsity, 
-            group_scores_cfg_text_similarity, group_scores_cfg_img_similarity
+            group_scores_cfg_text_similarity, group_scores_cfg_img_similarity,
+            group_scores_avg_self_attn
         ) = analyze_scores(save_path_new, [model_name], language=args.language)
     for group_name in GROUPS:
         print(f"{group_name}: {group_scores_semantics[model_name][group_name]:.3f}, {group_scores_quality[model_name][group_name]:.3f}, {group_scores_overall[model_name][group_name]:.3f}")
@@ -199,7 +209,8 @@ if __name__ == "__main__":
     print(f"Average Self-Attn Sparsity: {group_scores_self_attn_sparsity[model_name]['avg_self_attn_sparsity']:.3f}")
     print(f"Average CFG-Text Similarity: {group_scores_cfg_text_similarity[model_name]['avg_cfg_text_similarity']:.3f}")
     print(f"Average CFG-Img Similarity: {group_scores_cfg_img_similarity[model_name]['avg_cfg_img_similarity']:.3f}")
-
+    print(f"Average Avg Self-Attn Score: {group_scores_avg_self_attn[model_name]['avg_avg_self_attn_score']:.3f}")
+    
     if args.output_json_path:
         final_metrics = {
             "avg_semantics": group_scores_semantics[model_name]['avg_semantics'],
@@ -209,6 +220,7 @@ if __name__ == "__main__":
             "avg_self_attn_sparsity": group_scores_self_attn_sparsity[model_name]['avg_self_attn_sparsity'],
             "avg_cfg_text_similarity": group_scores_cfg_text_similarity[model_name]['avg_cfg_text_similarity'],
             "avg_cfg_img_similarity": group_scores_cfg_img_similarity[model_name]['avg_cfg_img_similarity'],
+            "avg_self_attn_score": group_scores_avg_self_attn[model_name]['avg_avg_self_attn_score'],
         }
         
         try:

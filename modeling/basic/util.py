@@ -58,17 +58,29 @@ class MLPArgs:
 	def __init__(
 		self,
 		use_custom_mlp: bool = False,
-		use_quantized_w: bool = False,
+		use_quantized_und_w: bool = False,
+		use_quantized_gen_w: bool = False,
 		use_similarity: bool = False,
+		use_full_head_similarity: bool = False,
 		save_mlp: Optional[str]= None,
 		save_dir: Optional[str]= None,
 	):
 		if use_custom_mlp:
-			print("Using custom MLP with CFG sparsity tracking.")
+			if use_similarity:
+				if use_quantized_gen_w:
+					print("Using custom quantized MLP for generation with CFG similarity optimizing.")
+				else:
+					print("Using custom MLP for generation with CFG similarity optimizing.")
+			if use_quantized_und_w:
+				print("Using custom quantized MLP for understanding.")
+			if use_full_head_similarity:
+				print("Using full head similarity for MLP.")
 		
 		self.use_custom_mlp = use_custom_mlp
-		self.use_quantized_w = use_quantized_w
+		self.use_quantized_und_w = use_quantized_und_w
+		self.use_quantized_gen_w = use_quantized_gen_w
 		self.use_similarity = use_similarity
+		self.use_full_head_similarity = use_full_head_similarity and use_similarity
 		self.save_mlp = save_mlp
 		self.save_dir = save_dir
 

@@ -172,6 +172,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_custom_mlp", action='store_true', help="Whether to use custom MLP modules.")
     parser.add_argument("--mlp_use_similarity", action='store_true', help="Whether to use similarity-based sparsity in MLP.")
     parser.add_argument("--quantized_mlp_w", action='store_true', help="Whether to use quantized weights for text generation in custom MLP.")
+    parser.add_argument("--use_full_head_similarity", action='store_true', help="Whether to use full head similarity in custom MLP.")
     args = parser.parse_args()
     
     attention_backend = args.attn_backend
@@ -191,7 +192,8 @@ if __name__ == "__main__":
     mlp_args = MLPArgs(
       use_custom_mlp=args.use_custom_mlp,
       use_similarity=args.mlp_use_similarity,
-      use_quantized_w=args.quantized_mlp_w,
+      use_quantized_und_w=args.quantized_mlp_w,
+      use_full_head_similarity=args.use_full_head_similarity,
       save_mlp=args.mlp_save,
       save_dir=args.mlp_save_dir
     )

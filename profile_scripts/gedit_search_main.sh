@@ -5,9 +5,11 @@
 # 您可以根据需要向这些数组中添加任意数量的值
 # THRESHOLDS=(4e-7 4e-6 1e-5 2e-5 4e-5 8e-5 1e-4 4e-4 8e-4 1e-3)
 # GROUP_SIZES=(8 10 14 16 32 64)
-THRESHOLDS=(4e-7 4e-6 1e-5 2e-5)
-GROUP_SIZES=(8 10 14 16)
-# THRESHOLDS=(4e-5)
+# THRESHOLDS=(4e-7 4e-6 1e-5 2e-5)
+# GROUP_SIZES=(8 10 14 16)
+# THRESHOLDS=(4e-4)
+THRESHOLDS=(4e-5 1e-4 4e-4 8e-4 1e-3)
+GROUP_SIZES=(16)
 # GROUP_SIZES=(10)
 # --- 1. 定义 Threshold (浮点数) 的搜索范围 ---
 # 使用 awk 来生成浮点数序列，支持科学记数法
@@ -64,11 +66,28 @@ for threshold in "${THRESHOLDS[@]}"; do
 		# 为当前参数组合定义一个唯一的输出目录
 		RUN_OUTPUT_DIR="$MAIN_OUTPUT_DIR/thresh_${threshold}_gsize_${gsize}"
 		METRICS_JSON_PATH="$RUN_OUTPUT_DIR/summary_metrics.json"
-		DEVICE_BASE=4
+		DEVICE_BASE=0
+		SHUFFLE_BASE=16
+		N_GPU=8
+
+		attn_backend="naive_sparse_quant_cfg"
+		# attn_backend="naive_cal_ave_self_attn_score"
+		vae_vit_sparse="--vae_vit_sparse"
+		self_attn_sparse="--self_attn_sparse"
+		use_custom_mlp="--use_custom_mlp"
+		mlp_use_similarity="--mlp_use_similarity"
+		use_quantized_mlp_und_w=--quantized_mlp_und_w
+		use_quantized_mlp_gen_w=--quantized_mlp_gen_w
+		# use_full_head_similarity="--use_full_head_similarity"
+
 
 		# 调用基础脚本执行实验，并将输出目录、threshold 和 group_size 作为参数传入
 		# 假设 gedit_search_base.sh 已经被修改为可以接收这三个参数
-		./profile_scripts/gedit_search_base.sh "$RUN_OUTPUT_DIR" "$threshold" "$gsize" "$METRICS_JSON_PATH" "$DEVICE_BASE"
+		./profile_scripts/gedit_search_base.sh "$RUN_OUTPUT_DIR" "$threshold" "$gsize" \
+			"$METRICS_JSON_PATH" "$DEVICE_BASE" "$SHUFFLE_BASE" "$N_GPU" \
+			"$attn_backend" "$vae_vit_sparse" "$self_attn_sparse" \
+			"$use_custom_mlp" "$mlp_use_similarity" "$use_full_head_similarity" \
+			"$use_quantized_mlp_und_w" "$use_quantized_mlp_gen_w"
 
 		# 检查基础脚本是否成功执行 (可选但推荐)
 		if [ $? -ne 0 ]; then
@@ -89,6 +108,7 @@ for threshold in "${THRESHOLDS[@]}"; do
 		echo "Run finished at: $(date +"%Y-%m-%d %H:%M:%S")" | tee -a "$LOG_FILE"
 		echo "Duration: ${minutes} minutes ${seconds} seconds (${duration} seconds)" | tee -a "$LOG_FILE"
 		echo "Threshold: $threshold, Group Size: $gsize" | tee -a "$LOG_FILE"
+		echo "Shuffle Base: $SHUFFLE_BASE, Device Base: $DEVICE_BASE, N_GPU: $N_GPU" | tee -a "$LOG_FILE"
 		echo "----------------------------------------" | tee -a "$LOG_FILE"
 
 		# 调用 Python 脚本来分析本次运行的结果，并追加到汇总 CSV 文件中
